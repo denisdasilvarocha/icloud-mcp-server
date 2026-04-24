@@ -31,9 +31,6 @@ dependencies = [
 dev = [
   "ruff",
 ]
-vector = [
-  "lancedb",
-]
 
 [project.scripts]
 icloud-mcp = "icloud_mcp.server:main"

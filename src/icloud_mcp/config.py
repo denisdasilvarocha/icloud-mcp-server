@@ -5,19 +5,15 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 DEFAULT_DATABASE_PATH = Path("~/.local/share/icloud-mcp/icloud-mcp.sqlite3").expanduser()
 
 
 @dataclass(frozen=True)
 class Settings:
-    """Runtime settings for local STDIO or private HTTP deployment."""
+    """Runtime settings for local STDIO deployment."""
 
     database_path: Path = DEFAULT_DATABASE_PATH
-    transport: Literal["stdio", "http"] = "stdio"
-    host: str = "127.0.0.1"
-    port: int = 8000
     cursor_secret: str = "local-dev-cursor-secret-change-me"
     apple_id: str | None = None
     app_password: str | None = None
@@ -37,16 +33,9 @@ class Settings:
     def from_env(cls) -> Settings:
         """Build settings from environment variables."""
 
-        transport = os.getenv("ICLOUD_MCP_TRANSPORT", "stdio").lower()
-        if transport not in {"stdio", "http"}:
-            raise ValueError("ICLOUD_MCP_TRANSPORT must be 'stdio' or 'http'")
-
         database_path = Path(os.getenv("ICLOUD_MCP_DATABASE_PATH", str(DEFAULT_DATABASE_PATH))).expanduser()
         return cls(
             database_path=database_path,
-            transport=transport,  # type: ignore[arg-type]
-            host=os.getenv("ICLOUD_MCP_HOST", "127.0.0.1"),
-            port=int(os.getenv("ICLOUD_MCP_PORT", "8000")),
             cursor_secret=os.getenv("ICLOUD_MCP_CURSOR_SECRET", "local-dev-cursor-secret-change-me"),
             apple_id=os.getenv("ICLOUD_APPLE_ID"),
             app_password=os.getenv("ICLOUD_APP_PASSWORD"),

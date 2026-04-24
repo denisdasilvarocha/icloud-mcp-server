@@ -21,11 +21,7 @@ pip install -e .
 icloud-mcp
 ```
 
-Default transport is STDIO. For HTTP:
-
-```bash
-ICLOUD_MCP_TRANSPORT=http ICLOUD_MCP_HOST=127.0.0.1 ICLOUD_MCP_PORT=8000 icloud-mcp
-```
+The server runs over local STDIO only.
 
 ## Configure MCP Clients
 
@@ -45,9 +41,6 @@ Each script asks for Apple ID, app-specific password, whether sync should run on
 Environment variables:
 
 - `ICLOUD_MCP_DATABASE_PATH`: SQLite path. Defaults to `~/.local/share/icloud-mcp/icloud-mcp.sqlite3`.
-- `ICLOUD_MCP_TRANSPORT`: `stdio` or `http`.
-- `ICLOUD_MCP_HOST`: HTTP bind host.
-- `ICLOUD_MCP_PORT`: HTTP bind port.
 - `ICLOUD_MCP_CURSOR_SECRET`: HMAC secret for cursors.
 - `ICLOUD_APPLE_ID`: Apple account identifier for out-of-band sync adapters.
 - `ICLOUD_APP_PASSWORD`: App-specific password for out-of-band sync adapters.

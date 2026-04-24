@@ -50,10 +50,7 @@ def main() -> None:
     scheduler = SyncScheduler(db=db, settings=settings)
     scheduler.start_background()
     mcp = create_server(settings=settings, db=db)
-    if settings.transport == "http":
-        mcp.run(transport="http", host=settings.host, port=settings.port)
-    else:
-        mcp.run()
+    mcp.run()
 
 
 if __name__ == "__main__":
