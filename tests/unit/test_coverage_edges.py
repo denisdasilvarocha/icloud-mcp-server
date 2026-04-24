@@ -162,9 +162,23 @@ class CoverageEdgesTests(unittest.TestCase):
             mailbox, older = adapter.sync_backfill(
                 apple_id="a", app_password="b", mailbox="INBOX", cursor="uid:3", limit=2
             )
+            empty_cache_delta = adapter.sync_incremental(
+                apple_id="a",
+                app_password="b",
+                mailbox_states={
+                    imap_mail._mailbox_id("INBOX"): {
+                        "last_synced_uid": 3,
+                        "uid_validity": "1",
+                        "known_uids": [],
+                    }
+                },
+                days=1,
+                limit_per_mailbox=2,
+            )
         self.assertEqual(mailboxes[0].name, "INBOX")
         self.assertEqual(messages[0].subject, "Recent")
         self.assertEqual(delta.deleted[0].uid, 4)
+        self.assertEqual([message.uid for message in empty_cache_delta.messages], [1, 2])
         self.assertEqual(mailbox.backfill_status, "complete")
         self.assertGreaterEqual(len(older), 1)
         self.assertEqual(imap_mail._decode_header(""), "")
@@ -1266,7 +1280,7 @@ class _FakeIMAPClient:
     def fetch(self, uids: list[int], data: list[bytes]) -> dict[int, dict[bytes, object]]:
         return {
             uid: {
-                b"RFC822": (
+                b"BODY[]": (
                     f"From: Sender <s@example.com>\nTo: Me <me@example.com>\nSubject: {'Recent' if uid > 1 else 'Old'}\n"
                     "Date: Fri, 24 Apr 2026 09:00:00 +0000\n\nbody"
                 ).encode(),

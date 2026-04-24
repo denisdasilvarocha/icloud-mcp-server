@@ -167,7 +167,7 @@ class IMAPMailAdapter:
                     uids = [int(uid) for uid in client.search(["SINCE", since])]
                     deleted.extend(DeletedMailMessage(mailbox_id=mailbox_id, uid=uid) for uid in state.get("known_uids", []))
                 else:
-                    uids = _incremental_uids(client, state)
+                    uids = _incremental_uids(client, state, since=since)
                     known_uids = {int(uid) for uid in state.get("known_uids", [])}
                     if known_uids:
                         remote_uids = {int(uid) for uid in client.search(["ALL"])}
@@ -245,9 +245,9 @@ def _fetch_messages(client: Any, mailbox_id: str, uids: list[int]) -> list[Synce
     if not uids:
         return []
     messages = []
-    response = client.fetch(uids, ["RFC822", "FLAGS", "RFC822.SIZE", "INTERNALDATE"])
+    response = client.fetch(uids, ["BODY[]", "FLAGS", "RFC822.SIZE", "INTERNALDATE"])
     for uid, data in response.items():
-        raw = data.get(b"RFC822")
+        raw = data.get(b"BODY[]") or data.get(b"RFC822")
         if not raw:
             continue
         messages.append(
@@ -270,7 +270,9 @@ def _select_folder_condstore(client: Any, folder: str) -> dict[Any, Any]:
         return client.select_folder(folder, readonly=True)
 
 
-def _incremental_uids(client: Any, state: dict[str, Any]) -> list[int]:
+def _incremental_uids(client: Any, state: dict[str, Any], *, since: date) -> list[int]:
+    if state.get("last_synced_uid") and not state.get("known_uids"):
+        return [int(uid) for uid in client.search(["SINCE", since])]
     last_uid = int(state.get("last_synced_uid") or 0)
     uid_query = ["UID", f"{last_uid + 1}:*"] if last_uid else ["ALL"]
     uids = {int(uid) for uid in client.search(uid_query)}
