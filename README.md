@@ -2,35 +2,6 @@
 
 Local-first FastMCP server for iCloud Mail, Calendar, and Contacts. It keeps a SQLite cache and FTS index so MCP tools answer from local data first, while protocol adapters and sync workers isolate iCloud network access.
 
-## Status
-
-Design gap tracking lives in [DESIGN_SPEC_GAPS.md](DESIGN_SPEC_GAPS.md).
-
-Implemented:
-
-- FastMCP tool registration for search, mail, contacts, calendar, and sync status.
-- Optional MCP resources for `mail://{message_id}`, `calendar://{event_id}`, and `contact://{contact_id}` plus an iCloud search prompt.
-- SQLite WAL schema with additive migrations for accounts, mail, calendar, contacts, aliases, chunks, FTS, `sqlite-vec` durable local embeddings, cursors, idempotency, sync checkpoints, metrics, and audit events.
-- IMAP parsing for Bcc, threading headers, attachments, text/calendar invites, encrypted-body status, and quote-suppressed search chunks.
-- Local hybrid search with query planning, relative date windows, alias expansion, chunk snippets, occurrence documents, `sqlite-vec` semantic retrieval, freshness metadata, deterministic answer hints, and structured output fields.
-- Calendar create/update guardrails with preflight idempotency, deterministic request IDs, ETag conflict handling, single/future/series scope handling, recurrence EXDATE/RDATE expansion, and ICS property preservation for patched fields.
-- CardDAV aliases for names, email local parts, normalized phone aliases, nicknames, phonetic/relation fields, trigram contact search, plus tombstone cleanup.
-- Sync status, per-worker execution gates, retry backoff/circuit state, local metrics, redaction, keychain credential fallback, and STDIO-only runtime configuration.
-
-Partial:
-
-- IMAP, CalDAV, and CardDAV live adapters support real network sync and store sync metadata, but protocol-level QRESYNC/WebDAV `sync-collection` behavior still depends on what the underlying libraries expose.
-- Calendar remote writes preflight ETags and normalize connectivity/auth errors. Explicit `If-Match` transport headers need fake-server integration coverage before claiming full wire-level enforcement.
-- Mail sync intentionally fetches and stores full RFC822-derived bodies for synced messages; search indexing still caps/cleans chunks and `mail.view` returns bounded body continuations.
-- Attachment text/PDF extraction is disabled by default; attachment metadata is indexed and returned.
-- Vector search uses `sqlite-vec` when the extension loads, with JSON sparse embeddings retained as a local fallback.
-
-Not implemented:
-
-- Public HTTP transport is intentionally absent.
-- Calendar delete tools are intentionally absent.
-- Offline write queueing is intentionally absent.
-
 ## Run
 
 ```bash
