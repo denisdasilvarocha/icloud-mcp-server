@@ -13,14 +13,15 @@ Implemented:
 - SQLite WAL schema with additive migrations for accounts, mail, calendar, contacts, aliases, chunks, FTS, `sqlite-vec` durable local embeddings, cursors, idempotency, sync checkpoints, metrics, and audit events.
 - IMAP parsing for Bcc, threading headers, attachments, text/calendar invites, encrypted-body status, and quote-suppressed search chunks.
 - Local hybrid search with query planning, relative date windows, alias expansion, chunk snippets, occurrence documents, `sqlite-vec` semantic retrieval, freshness metadata, deterministic answer hints, and structured output fields.
-- Calendar create/update guardrails with idempotency, ETag conflict handling, single/future/series scope handling, recurrence EXDATE/RDATE expansion, and ICS property preservation for patched fields.
-- CardDAV aliases for names, email local parts, nicknames, phonetic/relation fields, plus tombstone cleanup.
-- Sync status, local metrics, redaction, keychain credential fallback, and STDIO-only runtime configuration.
+- Calendar create/update guardrails with preflight idempotency, deterministic request IDs, ETag conflict handling, single/future/series scope handling, recurrence EXDATE/RDATE expansion, and ICS property preservation for patched fields.
+- CardDAV aliases for names, email local parts, normalized phone aliases, nicknames, phonetic/relation fields, trigram contact search, plus tombstone cleanup.
+- Sync status, per-worker execution gates, retry backoff/circuit state, local metrics, redaction, keychain credential fallback, and STDIO-only runtime configuration.
 
 Partial:
 
 - IMAP, CalDAV, and CardDAV live adapters support real network sync and store sync metadata, but protocol-level QRESYNC/WebDAV `sync-collection` behavior still depends on what the underlying libraries expose.
 - Calendar remote writes preflight ETags and normalize connectivity/auth errors. Explicit `If-Match` transport headers need fake-server integration coverage before claiming full wire-level enforcement.
+- Mail sync intentionally fetches and stores full RFC822-derived bodies for synced messages; search indexing still caps/cleans chunks and `mail.view` returns bounded body continuations.
 - Attachment text/PDF extraction is disabled by default; attachment metadata is indexed and returned.
 - Vector search uses `sqlite-vec` when the extension loads, with JSON sparse embeddings retained as a local fallback.
 
@@ -60,6 +61,7 @@ Environment variables:
 
 - `ICLOUD_MCP_DATABASE_PATH`: SQLite path. Defaults to `~/.local/share/icloud-mcp/icloud-mcp.sqlite3`.
 - `ICLOUD_MCP_CURSOR_SECRET`: HMAC secret for cursors.
+- `ICLOUD_MCP_QUERY_CACHE_TTL_SECONDS`: Search query cache TTL, clamped to 300-1800 seconds. Defaults to `300`.
 - `ICLOUD_APPLE_ID`: Apple account identifier for out-of-band sync adapters.
 - `ICLOUD_APP_PASSWORD`: App-specific password for out-of-band sync adapters.
 - `ICLOUD_MCP_USE_KEYCHAIN`: Read the app-specific password from the OS keychain when env password is absent. Defaults to `true`.
@@ -72,6 +74,7 @@ Apple credentials are never accepted as MCP tool arguments.
 
 - Search/list/view always answer from local cache; `refresh_if_stale` reports stale domains because refresh runs through background/manual sync.
 - Mail backfill is checkpointed per mailbox, but older body backfill remains bounded by configured sync windows.
+- Cursor-taking tools return deterministic `invalid_cursor` status objects for malformed, tampered, or expired cursors.
 - Retrieved mail bodies, calendar descriptions, contact notes, snippets, and resource payloads are untrusted user data and are labeled as such in outputs.
 - Setup scripts can still write env files; prefer OS keychain storage for app-specific passwords.
 
@@ -82,6 +85,10 @@ uv run ruff check .
 uv run python -m unittest discover -s tests
 uv run --with cyclonedx-bom cyclonedx-py environment -o sbom.cdx.json
 ```
+
+Current fake protocol and contract coverage lives in `tests/unit/test_protocol_adapters.py`,
+`tests/unit/test_sync_workers.py`, `tests/unit/test_mcp_contracts.py`, and
+`tests/unit/test_spec_closure.py`.
 
 ## Test
 

@@ -838,10 +838,10 @@ def create_calendar_event(
 
     if request_id:
         cached = db.query_one("SELECT response_json FROM idempotency_keys WHERE request_id = ?", (request_id,))
-        if cached:
+        if cached and cached["response_json"]:
             return parse_json(cached["response_json"], {})
 
-    event_id = f"cal_evt_{uuid.uuid4().hex}"
+    event_id = f"cal_evt_{uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex}" if request_id else f"cal_evt_{uuid.uuid4().hex}"
     event_uid = uid or f"{event_id}@icloud-mcp.local"
     event_href = href or f"local://calendar/{calendar_id}/{event_id}.ics"
     event_etag = etag or "local-1"
@@ -859,6 +859,14 @@ def create_calendar_event(
         alarms=alarms or [],
     )
     now = utc_now()
+    if request_id:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO idempotency_keys (request_id, operation, object_id, response_json, created_at)
+            VALUES (?, 'calendar.create_event', ?, '', ?)
+            """,
+            (request_id, event_id, now),
+        )
     db.execute(
         """
         INSERT INTO calendar_objects
@@ -909,6 +917,9 @@ def create_calendar_event(
             """
             INSERT INTO idempotency_keys (request_id, operation, object_id, response_json, created_at)
             VALUES (?, 'calendar.create_event', ?, ?, ?)
+            ON CONFLICT(request_id) DO UPDATE SET
+              object_id = excluded.object_id,
+              response_json = excluded.response_json
             """,
             (request_id, event_id, compact_json(response), now),
         )
@@ -935,6 +946,7 @@ def update_calendar_event(
             "status": "conflict",
             "event_id": event_id,
             "provided_etag": etag,
+            "latest_etag": current["etag"],
             "latest": _calendar_summary(current),
         }
     if scope == "single":
@@ -1807,6 +1819,9 @@ def upsert_contact(
     """Upsert a synced contact, aliases, trigram row, and search document."""
 
     now = utc_now()
+    raw_phones = phones or []
+    normalized_phones = [_normalize_phone_alias(phone) for phone in raw_phones]
+    phone_aliases = [phone for phone in normalized_phones if phone]
     db.execute(
         """
         INSERT INTO contacts
@@ -1834,7 +1849,7 @@ def upsert_contact(
             given_name,
             family_name,
             compact_json(emails),
-            compact_json(phones or []),
+            compact_json(raw_phones),
             organization,
             notes,
             now,
@@ -1849,6 +1864,7 @@ def upsert_contact(
         local_part = email.split("@", 1)[0]
         if local_part:
             typed_aliases.append((local_part, "email_local_part", 0.7))
+    typed_aliases.extend((phone, "phone_e164", 0.75) for phone in phone_aliases)
     typed_aliases.extend(extra_aliases or [])
     db.executemany(
         """
@@ -1866,7 +1882,7 @@ def upsert_contact(
         INSERT INTO contact_trigram_fts (contact_id, display_name, emails)
         VALUES (?, ?, ?)
         """,
-        (contact_id, display_name, " ".join(emails)),
+        (contact_id, display_name, " ".join([*emails, *raw_phones, *phone_aliases])),
     )
     upsert_search_document(
         db,
@@ -1879,14 +1895,27 @@ def upsert_contact(
             for part in [
                 f"Name: {display_name}",
                 f"Emails: {', '.join(emails)}",
-                f"Phones: {', '.join(phones or [])}",
+                f"Phones: {', '.join(raw_phones)}",
                 f"Organization: {organization or ''}",
             ]
             if part
         ),
-        metadata={"emails": emails, "phones": phones or [], "organization": organization},
+        metadata={"emails": emails, "phones": raw_phones, "phone_aliases": phone_aliases, "organization": organization},
         participants=" ".join(aliases),
     )
+
+
+def _normalize_phone_alias(phone: str) -> str | None:
+    digits = "".join(char for char in phone if char.isdigit())
+    if not digits:
+        return None
+    if phone.strip().startswith("+"):
+        return f"+{digits}"
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    return digits
 
 
 def search_contacts(
@@ -1899,6 +1928,17 @@ def search_contacts(
     """Search contacts through alias and trigram tables."""
 
     normalized = normalize_text(query)
+    trigram_query = '"' + query.replace('"', '""') + '"'
+    trigram_rows = db.query(
+        """
+        SELECT c.id, c.display_name, c.emails_json, c.phones_json, c.organization, 0.72 AS confidence
+        FROM contact_trigram_fts f
+        JOIN contacts c ON c.id = f.contact_id
+        WHERE contact_trigram_fts MATCH ? AND c.deleted_at IS NULL
+        LIMIT ? OFFSET ?
+        """,
+        (trigram_query, limit, offset),
+    )
     rows = db.query(
         """
         SELECT c.id, c.display_name, c.emails_json, c.phones_json, c.organization, MAX(pa.confidence) AS confidence
@@ -1916,8 +1956,14 @@ def search_contacts(
         """,
         (f"%{normalized}%", f"%{query}%", f"%{query}%", limit, offset),
     )
+    merged: dict[str, dict[str, Any]] = {}
+    for row in [*rows, *trigram_rows]:
+        existing = merged.get(row["id"])
+        if existing and float(existing.get("confidence") or 0) >= float(row.get("confidence") or 0):
+            continue
+        merged[row["id"]] = row
     contacts = []
-    for row in rows:
+    for row in sorted(merged.values(), key=lambda item: (-(float(item.get("confidence") or 0.5)), item["display_name"])):
         contact = _contact_summary(row)
         contact["score"] = round(float(row.get("confidence") or 0.5), 3)
         contacts.append(contact)

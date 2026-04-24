@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import random
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
@@ -19,6 +21,8 @@ from icloud_mcp.sync.mail_sync import MailBackfillWorker, MailSyncWorker
 from icloud_mcp.util import compact_json
 
 LOGGER = logging.getLogger(__name__)
+MAX_RETRIES = 5
+BASE_BACKOFF_SECONDS = 60
 
 WORKERS = [
     "mail_sync_worker",
@@ -29,6 +33,7 @@ WORKERS = [
     "embedding_worker",
     "maintenance_worker",
 ]
+_WORKER_LOCKS = {name: threading.Lock() for name in WORKERS}
 
 
 @dataclass
@@ -75,25 +80,7 @@ class SyncScheduler:
             MailSyncWorker(self.db, self.settings),
             MailBackfillWorker(self.db, self.settings),
         ]:
-            started = time.perf_counter()
-            try:
-                update_checkpoint(self.db, worker.name, "running", {"mode": "manual_or_background"})
-                results[worker.name] = worker.run_once()
-                record_metric(
-                    self.db, "sync.duration_ms", (time.perf_counter() - started) * 1000, {"worker": worker.name}
-                )
-            except Exception as exc:
-                LOGGER.exception("Sync worker failed: %s", worker.name)
-                failure = {
-                    "status": "error",
-                    "error": exc.__class__.__name__,
-                    "message": redact_text(str(exc), allow_unredacted=self.settings.allow_unredacted_debug),
-                    "last_error": exc.__class__.__name__,
-                    "retry_count": 1,
-                }
-                update_checkpoint(self.db, worker.name, "error", failure)
-                record_metric(self.db, "sync.failure", 1, {"worker": worker.name, "error": exc.__class__.__name__})
-                results[worker.name] = failure
+            results[worker.name] = self._run_worker_with_gate(worker)
         update_checkpoint(self.db, "indexer_worker", "ok", {"mode": "inline_fts"})
         results["embedding_worker"] = EmbeddingWorker(self.db).run_once()
         self.db.execute("DELETE FROM query_cache WHERE expires_at < datetime('now')")
@@ -104,3 +91,73 @@ class SyncScheduler:
         while not self._stop.is_set():
             self.sync_now()
             self._stop.wait(max(60, self.settings.sync_interval_seconds))
+
+    def _run_worker_with_gate(self, worker: object) -> dict:
+        name = worker.name
+        lock = _WORKER_LOCKS[name]
+        if not lock.acquire(blocking=False):
+            result = {"status": "skipped", "reason": "already_running"}
+            update_checkpoint(self.db, name, "skipped", result)
+            return result
+        try:
+            checkpoint = self.db.query_one("SELECT retry_count, backoff_until FROM sync_checkpoints WHERE name = ?", (name,))
+            if checkpoint and int(checkpoint.get("retry_count") or 0) >= MAX_RETRIES:
+                result = {
+                    "status": "dead_letter",
+                    "reason": "max_retries_exceeded",
+                    "retry_count": checkpoint.get("retry_count") or 0,
+                    "circuit": "open",
+                }
+                update_checkpoint(self.db, name, "dead_letter", result)
+                return result
+            if checkpoint and _in_backoff(checkpoint.get("backoff_until")):
+                result = {
+                    "status": "skipped",
+                    "reason": "backoff_active",
+                    "retry_count": checkpoint.get("retry_count") or 0,
+                    "backoff_until": checkpoint.get("backoff_until"),
+                }
+                update_checkpoint(self.db, name, "backoff", result)
+                return result
+
+            started = time.perf_counter()
+            try:
+                update_checkpoint(self.db, name, "running", {"mode": "manual_or_background"})
+                result = worker.run_once()
+                result["retry_count"] = 0
+                update_checkpoint(self.db, name, "ok" if result.get("status") != "skipped" else "skipped", result)
+                record_metric(self.db, "sync.duration_ms", (time.perf_counter() - started) * 1000, {"worker": name})
+                return result
+            except Exception as exc:
+                LOGGER.exception("Sync worker failed: %s", name)
+                retry_count = int((checkpoint or {}).get("retry_count") or 0) + 1
+                status = "dead_letter" if retry_count >= MAX_RETRIES else "error"
+                backoff_until = None if status == "dead_letter" else _backoff_until(retry_count)
+                failure = {
+                    "status": status,
+                    "error": exc.__class__.__name__,
+                    "message": redact_text(str(exc), allow_unredacted=self.settings.allow_unredacted_debug),
+                    "last_error": exc.__class__.__name__,
+                    "retry_count": retry_count,
+                    "backoff_until": backoff_until,
+                    "circuit": "open" if status == "dead_letter" else "closed",
+                }
+                update_checkpoint(self.db, name, status, failure)
+                record_metric(self.db, "sync.failure", 1, {"worker": name, "error": exc.__class__.__name__})
+                return failure
+        finally:
+            lock.release()
+
+
+def _in_backoff(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        return datetime.fromisoformat(value) > datetime.now(tz=UTC)
+    except ValueError:
+        return False
+
+
+def _backoff_until(retry_count: int) -> str:
+    delay = BASE_BACKOFF_SECONDS * (2 ** max(0, retry_count - 1)) + random.uniform(0, 5)
+    return (datetime.now(tz=UTC) + timedelta(seconds=delay)).replace(microsecond=0).isoformat()

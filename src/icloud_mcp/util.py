@@ -87,6 +87,15 @@ def decode_cursor(cursor: str | None, secret: str) -> dict[str, Any]:
     return payload
 
 
+def cursor_error(exc: Exception) -> dict[str, str]:
+    """Return deterministic public cursor error details."""
+
+    message = str(exc).casefold()
+    if "expired" in message:
+        return {"status": "invalid_cursor", "reason": "expired"}
+    return {"status": "invalid_cursor", "reason": "tampered_or_malformed"}
+
+
 def next_cursor(offset: int, returned: int, limit: int, secret: str, extra: dict[str, Any] | None = None) -> str | None:
     """Build next cursor when more rows may be available."""
 

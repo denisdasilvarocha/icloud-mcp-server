@@ -6,7 +6,7 @@ from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.db.repositories import list_contacts, search_contacts, view_contact
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
-from icloud_mcp.util import decode_cursor
+from icloud_mcp.util import cursor_error, decode_cursor
 
 
 def register_contact_tools(mcp: object, db: Database, settings: Settings) -> None:
@@ -20,7 +20,10 @@ def register_contact_tools(mcp: object, db: Database, settings: Settings) -> Non
     ) -> dict:
         """List compact contact rows from local cache."""
 
-        cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        try:
+            cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        except ValueError as exc:
+            return cursor_error(exc)
         return list_contacts(
             db,
             addressbook_id=addressbook_id,
@@ -40,7 +43,10 @@ def register_contact_tools(mcp: object, db: Database, settings: Settings) -> Non
     async def contacts_search(query: str, limit: int = 10, cursor: str | None = None) -> dict:
         """Search local contacts using aliases."""
 
-        cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        try:
+            cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        except ValueError as exc:
+            return cursor_error(exc)
         return search_contacts(
             db,
             query=query,

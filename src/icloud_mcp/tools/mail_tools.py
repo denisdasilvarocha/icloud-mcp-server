@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
+
+from pydantic import Field
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.db.repositories import list_mail, view_mail
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
-from icloud_mcp.util import decode_cursor
+from icloud_mcp.util import cursor_error, decode_cursor
 
 
 def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
@@ -19,13 +22,16 @@ def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
         mailbox: str = "INBOX",
         after: datetime | None = None,
         before: datetime | None = None,
-        from_email: str | None = None,
+        from_email: Annotated[str | None, Field(alias="from")] = None,
         limit: int = 25,
         cursor: str | None = None,
     ) -> dict:
         """List compact mail rows from local cache."""
 
-        cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        try:
+            cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        except ValueError as exc:
+            return cursor_error(exc)
         return list_mail(
             db,
             mailbox=mailbox,

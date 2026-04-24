@@ -95,8 +95,8 @@ The Mail adapter must:
 
 1. Discover mailboxes.
 2. Synchronize message metadata.
-3. Fetch bodies for indexing.
-4. Fetch full message bodies only on explicit `mail.view`.
+3. Fetch RFC822 message data for indexing and local viewing.
+4. Return full bodies only through bounded `mail.view` continuations.
 5. Never mutate mail state unless a future explicit tool is added.
 
 ### iCloud connection
@@ -167,7 +167,7 @@ The indexer must handle:
 | Quoted reply chains                   | Store full text, but create “cleaned reply” chunks with quoted text down-weighted           |
 | Calendar invite email not on calendar | Parse `text/calendar` parts and index as `mail_invite` evidence                             |
 | Attachments                           | Index metadata by default; optionally index small text/PDF attachments behind a config flag |
-| Huge emails                           | Store preview and first N chunks; lazy-fetch more on explicit view                          |
+| Huge emails                           | Full synced body may be stored locally; index/search still cap chunks and `mail.view` pages output |
 | S/MIME/encrypted body                 | Index metadata only; return `body_unavailable_reason`                                       |
 | Spam/newsletters                      | Lower rank unless exact match or user filters include those folders                         |
 
@@ -416,9 +416,12 @@ async def search(
     limit: int = 10,
     include_body_snippets: bool = True,
     freshness: Literal["cache_only", "allow_stale", "refresh_if_stale"] = "allow_stale",
+    cursor: str | None = None,
 ) -> SearchResult:
     ...
 ```
+
+Public schemas use `freshness` exactly. Older compatibility names such as `freshness_policy` are intentionally not exposed. Malformed, tampered, or expired cursors return deterministic `invalid_cursor` status payloads instead of raw exceptions.
 
 ### Output shape
 
@@ -539,6 +542,8 @@ Return compact text plus continuation:
 
 Domain-specific wrapper around `icloud.search(domains=["mail"])`.
 
+It accepts the same `freshness` and cursor semantics as `icloud.search`.
+
 ---
 
 ## 5.4 Contact tools
@@ -567,7 +572,8 @@ Domain-specific wrapper around `icloud.search(domains=["mail"])`.
 ```json
 {
   "query": "Liesa",
-  "limit": 10
+  "limit": 10,
+  "cursor": null
 }
 ```
 
@@ -1114,6 +1120,9 @@ Suggested boosts:
 | Query cache             | SQLite                            | Normalized query result reuse          |
 | Connection pool         | IMAP/DAV clients                   | Avoid repeated setup overhead          |
 
+The SQLite query cache TTL is configurable through `ICLOUD_MCP_QUERY_CACHE_TTL_SECONDS`
+and clamped to 5-30 minutes.
+
 ### Query cache key
 
 ```text
@@ -1382,7 +1391,7 @@ No delete tool should be included in this version.
 | Hot cached search                  |                   <100 ms |
 | Local hybrid search                |                   <300 ms |
 | Mail/calendar/contact view from DB |                   <100 ms |
-| View requiring remote lazy fetch   |                    <2–5 s |
+| View requiring body continuation   |                  <100 ms |
 | Calendar create/update             | <1–3 s, network-dependent |
 | Background sync                    |  Does not block MCP calls |
 
@@ -1409,6 +1418,10 @@ Each worker must have:
 | Locking                         | Prevent duplicate syncs       |
 | Checkpointing                   | Resume after crash            |
 
+`icloud.sync.status` exposes each worker's `status`, `last_error`, `retry_count`,
+`backoff_until`, `progress_cursor`, and detail payload. Runtime statuses include
+`idle`, `running`, `ok`, `skipped`, `backoff`, `error`, and `dead_letter`.
+
 ## 11.3 Offline behavior
 
 If iCloud is unreachable:
@@ -1428,11 +1441,13 @@ For calendar create:
 ```
 
 Store `request_id → event_id` so retries do not create duplicates.
+When `request_id` is provided, reserve the idempotency key before remote CalDAV create and use a deterministic UID derived from the request ID. Retries after a completed create return the stored response.
 
 For calendar update:
 
 * Use ETag where possible.
-* Return conflict if remote changed.
+* Send CalDAV updates with `If-Match` semantics.
+* Return conflict if remote changed, including `latest_etag` and the latest cached summary.
 
 ---
 

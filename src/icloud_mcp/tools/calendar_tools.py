@@ -27,7 +27,7 @@ from icloud_mcp.schemas.calendar import CreateEventInput, UpdateEventInput
 from icloud_mcp.security.redaction import redact_text
 from icloud_mcp.security.secrets import load_icloud_credentials
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
-from icloud_mcp.util import decode_cursor
+from icloud_mcp.util import cursor_error, decode_cursor, parse_json, utc_now
 
 WRITE_ANNOTATIONS = {
     "readOnlyHint": False,
@@ -56,7 +56,10 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
     ) -> dict:
         """List cached calendar events by time range."""
 
-        cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        try:
+            cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        except ValueError as exc:
+            return cursor_error(exc)
         return list_events(
             db,
             calendar_ids=calendar_ids,
@@ -91,7 +94,31 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
         if not calendar:
             return {"status": "sync_required", "message": "No writable remote CalDAV calendar is known"}
 
-        uid = f"cal_evt_{uuid.uuid4().hex}@icloud-mcp.local"
+        request_id = input_data.get("request_id")
+        if request_id:
+            existing = db.query_one(
+                """
+                SELECT response_json
+                FROM idempotency_keys
+                WHERE request_id = ? AND operation = 'calendar.create_event' AND response_json != ''
+                """,
+                (request_id,),
+            )
+            if existing:
+                return parse_json(existing["response_json"], {})
+        uid = (
+            f"cal_evt_{uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex}@icloud-mcp.local"
+            if request_id
+            else f"cal_evt_{uuid.uuid4().hex}@icloud-mcp.local"
+        )
+        if request_id:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO idempotency_keys (request_id, operation, object_id, response_json, created_at)
+                VALUES (?, 'calendar.create_event', ?, ?, ?)
+                """,
+                (request_id, uid.removesuffix("@icloud-mcp.local"), "", utc_now()),
+            )
         try:
             remote = adapter.create_event(
                 apple_id=credentials.apple_id,
@@ -152,6 +179,15 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
             return {"status": "credential_missing", "message": "Configure ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD"}
         if str(current["href"]).startswith("local://"):
             return {"status": "sync_required", "message": "Event has no remote CalDAV href. Sync calendar first."}
+        expected_etag = input_data.get("etag") or current.get("etag")
+        if not expected_etag:
+            return {
+                "status": "conflict",
+                "event_id": event_id,
+                "message": "Missing ETag; sync event before updating.",
+                "latest_etag": None,
+                "latest": {"title": current.get("summary"), "start": current.get("dtstart"), "end": current.get("dtend")},
+            }
 
         raw_ics = _patched_ics(current, patch)
         try:
@@ -160,7 +196,7 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
                 app_password=credentials.app_password,
                 event_href=current["href"],
                 raw_ics=raw_ics,
-                expected_etag=input_data.get("etag") or current.get("etag"),
+                expected_etag=expected_etag,
             )
         except Exception as exc:
             return _write_exception_status(exc, settings)
