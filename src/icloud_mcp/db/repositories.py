@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from dateutil.rrule import rrulestr
 from icalendar import Alarm, Calendar, Event
 
 from icloud_mcp.config import Settings
@@ -169,10 +170,14 @@ def search_documents(
     limit: int,
     offset: int,
     snippet_chars: int,
+    start: str | None = None,
+    end: str | None = None,
+    person: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run local lexical FTS search and return compact rows."""
 
     terms = tokenize(query)
+    query_limit = min(limit * 5, 100) if (start or end or person) else limit
     if terms:
         fts_query = " OR ".join(f'"{term}"' for term in terms[:8])
         placeholders = ",".join("?" for _ in domains)
@@ -195,7 +200,7 @@ def search_documents(
             ORDER BY rank ASC
             LIMIT ? OFFSET ?
             """,
-            (fts_query, *domains, limit, offset),
+            (fts_query, *domains, query_limit, offset),
         )
     else:
         placeholders = ",".join("?" for _ in domains)
@@ -207,14 +212,16 @@ def search_documents(
             ORDER BY updated_at DESC
             LIMIT ? OFFSET ?
             """,
-            (*domains, limit, offset),
+            (*domains, query_limit, offset),
         )
 
-    rows = _add_semantic_results(db, query=query, domains=domains, rows=rows, limit=limit)
+    rows = _add_semantic_results(db, query=query, domains=domains, rows=rows, limit=query_limit)
 
     results = []
-    for index, row in enumerate(rows[:limit]):
+    for index, row in enumerate(rows):
         metadata = parse_json(row.get("metadata_json"), {})
+        if not _matches_search_filters(row, metadata, start=start, end=end, person=person):
+            continue
         score = row.get("score")
         if score is None:
             score = max(0.0, 1.0 - (offset + index) * 0.05)
@@ -230,6 +237,8 @@ def search_documents(
                 **metadata,
             }
         )
+        if len(results) >= limit:
+            break
     return results
 
 
@@ -263,6 +272,100 @@ def _add_semantic_results(
         semantic_rows.append(candidate)
     semantic_rows.sort(key=lambda row: row["score"], reverse=True)
     return rows + semantic_rows[: max(0, limit - len(rows))]
+
+
+def person_alias_terms(db: Database, person: str | None) -> list[str]:
+    """Return known aliases for a person query."""
+
+    if not person:
+        return []
+    normalized = normalize_text(person)
+    rows = db.query(
+        """
+        SELECT DISTINCT alias
+        FROM person_aliases
+        WHERE normalized_alias LIKE ?
+        ORDER BY confidence DESC, alias
+        LIMIT 8
+        """,
+        (f"%{normalized}%",),
+    )
+    aliases = [row["alias"] for row in rows]
+    return list(dict.fromkeys([person, *aliases]))
+
+
+def query_cache_get(db: Database, key: str, generation: int) -> dict[str, Any] | None:
+    """Return a valid cached search response."""
+
+    now = utc_now()
+    row = db.query_one(
+        """
+        SELECT value_json
+        FROM query_cache
+        WHERE key = ? AND index_generation = ? AND expires_at > ?
+        """,
+        (key, generation, now),
+    )
+    return parse_json(row["value_json"], {}) if row else None
+
+
+def query_cache_set(db: Database, key: str, value: dict[str, Any], generation: int, ttl_seconds: int = 300) -> None:
+    """Store a short-lived search response cache entry."""
+
+    expires_at = (datetime.now(tz=UTC) + timedelta(seconds=ttl_seconds)).replace(microsecond=0).isoformat()
+    db.execute(
+        """
+        INSERT INTO query_cache (key, value_json, expires_at, index_generation)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          value_json = excluded.value_json,
+          expires_at = excluded.expires_at,
+          index_generation = excluded.index_generation
+        """,
+        (key, compact_json(value), expires_at, generation),
+    )
+
+
+def _matches_search_filters(
+    row: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    start: str | None,
+    end: str | None,
+    person: str | None,
+) -> bool:
+    if (start or end) and not _matches_time_filter(row, metadata, start=start, end=end):
+        return False
+    return not (person and not _matches_person_filter(row, metadata, person))
+
+
+def _matches_time_filter(row: dict[str, Any], metadata: dict[str, Any], *, start: str | None, end: str | None) -> bool:
+    time_value = metadata.get("time") if isinstance(metadata.get("time"), dict) else {}
+    timezone = time_value.get("timezone") or "UTC"
+    item_start = time_value.get("start") or metadata.get("date")
+    item_end = time_value.get("end") or item_start
+    if not item_start:
+        return row.get("domain") == "contact"
+    item_start_dt = _datetime_value(str(item_start), timezone)
+    item_end_dt = _datetime_value(str(item_end), timezone)
+    range_start_dt = _datetime_value(start, timezone) if start else None
+    range_end_dt = _datetime_value(end, timezone) if end else None
+    return not (
+        (range_start_dt is not None and item_end_dt < range_start_dt)
+        or (range_end_dt is not None and item_start_dt > range_end_dt)
+    )
+
+
+def _matches_person_filter(row: dict[str, Any], metadata: dict[str, Any], person: str) -> bool:
+    needle = normalize_text(person)
+    haystack_parts = [
+        row.get("title", ""),
+        row.get("canonical_text", ""),
+        " ".join(metadata.get("participants", [])) if isinstance(metadata.get("participants"), list) else "",
+        compact_json(metadata.get("from", {})) if isinstance(metadata.get("from"), dict) else "",
+        " ".join(metadata.get("emails", [])) if isinstance(metadata.get("emails"), list) else "",
+    ]
+    return needle in normalize_text(" ".join(haystack_parts))
 
 
 def list_calendars(db: Database) -> list[dict[str, Any]]:
@@ -409,20 +512,15 @@ def upsert_calendar_object(
             now,
         ),
     )
-    db.execute("DELETE FROM calendar_occurrences WHERE event_id = ?", (event_id,))
-    db.execute(
-        """
-        INSERT INTO calendar_occurrences (id, event_id, occurrence_start, occurrence_end, recurrence_id, is_cancelled)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (
-            f"cal_occ_{uuid.uuid4().hex}",
-            event_id,
-            dtstart,
-            dtend,
-            recurrence_id,
-            1 if status == "CANCELLED" else 0,
-        ),
+    _replace_calendar_occurrences(
+        db,
+        event_id=event_id,
+        dtstart=dtstart,
+        dtend=dtend,
+        timezone=timezone,
+        rrule=rrule,
+        recurrence_id=recurrence_id,
+        status=status,
     )
     index_calendar_event(db, event_id)
 
@@ -566,13 +664,15 @@ def create_calendar_event(
             now,
         ),
     )
-    occurrence_id = f"cal_occ_{uuid.uuid4().hex}"
-    db.execute(
-        """
-        INSERT INTO calendar_occurrences (id, event_id, occurrence_start, occurrence_end)
-        VALUES (?, ?, ?, ?)
-        """,
-        (occurrence_id, event_id, start, end),
+    _replace_calendar_occurrences(
+        db,
+        event_id=event_id,
+        dtstart=start,
+        dtend=end,
+        timezone=timezone,
+        rrule=compact_json(recurrence) if recurrence else None,
+        recurrence_id=None,
+        status=None,
     )
     index_calendar_event(db, event_id)
     response = {
@@ -626,7 +726,7 @@ def update_calendar_event(
     location = patch.get("location", current["location"])
     description = patch.get("description", current["description"])
     attendees = patch.get("attendees", parse_json(current["attendees_json"], []))
-    recurrence = patch.get("recurrence", parse_json(current["rrule"], None))
+    recurrence = patch.get("recurrence", _stored_rrule_to_recurrence(current["rrule"]))
 
     raw_ics = raw_ics_override or build_ics(
         uid=current["uid"],
@@ -666,13 +766,15 @@ def update_calendar_event(
             event_id,
         ),
     )
-    db.execute(
-        """
-        UPDATE calendar_occurrences
-        SET occurrence_start = ?, occurrence_end = ?
-        WHERE event_id = ?
-        """,
-        (start, end, event_id),
+    _replace_calendar_occurrences(
+        db,
+        event_id=event_id,
+        dtstart=start,
+        dtend=end,
+        timezone=timezone,
+        rrule=compact_json(recurrence) if recurrence else None,
+        recurrence_id=current["recurrence_id"],
+        status=current["status"],
     )
     index_calendar_event(db, event_id)
     return {
@@ -682,6 +784,95 @@ def update_calendar_event(
         "diff": sorted(patch.keys()),
         "summary": {"title": title, "start": start, "end": end, "timezone": timezone},
     }
+
+
+def _replace_calendar_occurrences(
+    db: Database,
+    *,
+    event_id: str,
+    dtstart: str,
+    dtend: str,
+    timezone: str,
+    rrule: str | None,
+    recurrence_id: str | None,
+    status: str | None,
+) -> None:
+    db.execute("DELETE FROM calendar_occurrences WHERE event_id = ?", (event_id,))
+    rows = [
+        (
+            f"cal_occ_{uuid.uuid4().hex}",
+            event_id,
+            occurrence_start,
+            occurrence_end,
+            recurrence_id,
+            1 if status == "CANCELLED" else 0,
+        )
+        for occurrence_start, occurrence_end in _calendar_occurrence_windows(dtstart, dtend, timezone, rrule)
+    ]
+    db.executemany(
+        """
+        INSERT INTO calendar_occurrences (id, event_id, occurrence_start, occurrence_end, recurrence_id, is_cancelled)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def _calendar_occurrence_windows(
+    dtstart: str,
+    dtend: str,
+    timezone: str,
+    rrule: str | None,
+) -> list[tuple[str, str]]:
+    start_dt = _datetime_value(dtstart, timezone)
+    end_dt = _datetime_value(dtend, timezone)
+    duration = end_dt - start_dt
+    if duration <= timedelta(0):
+        duration = timedelta(hours=1)
+
+    recurrence_rule = _rrule_text(rrule)
+    if not recurrence_rule:
+        return [(dtstart, dtend)]
+
+    try:
+        rule = rrulestr(recurrence_rule, dtstart=start_dt)
+        horizon = start_dt + timedelta(days=366 * 5)
+        starts = list(rule.between(start_dt - timedelta(seconds=1), horizon, inc=True))[:730]
+    except (TypeError, ValueError):
+        return [(dtstart, dtend)]
+
+    return [(start.isoformat(), (start + duration).isoformat()) for start in starts] or [(dtstart, dtend)]
+
+
+def _rrule_text(rrule: str | None) -> str | None:
+    if not rrule:
+        return None
+    if rrule.startswith("RRULE:") or "\nRRULE:" in rrule:
+        return rrule
+    if rrule.startswith("{"):
+        recurrence = _stored_rrule_to_recurrence(rrule) or {}
+        parts = [f"{key.upper()}={str(value).upper()}" for key, value in recurrence.items() if value is not None]
+        return ";".join(parts)
+    return rrule
+
+
+def _stored_rrule_to_recurrence(rrule: str | None) -> dict[str, Any] | None:
+    if not rrule:
+        return None
+    if rrule.startswith("{"):
+        return parse_json(rrule, None)
+
+    value = rrule.removeprefix("RRULE:")
+    recurrence: dict[str, Any] = {}
+    for part in value.split(";"):
+        if "=" not in part:
+            continue
+        key, raw_value = part.split("=", 1)
+        normalized_value: Any = raw_value
+        if raw_value.isdigit():
+            normalized_value = int(raw_value)
+        recurrence[key.lower()] = normalized_value
+    return recurrence or None
 
 
 def index_calendar_event(db: Database, event_id: str) -> None:
@@ -1080,13 +1271,19 @@ def upsert_contact(
     )
 
 
-def search_contacts(db: Database, query: str, limit: int) -> dict[str, Any]:
+def search_contacts(
+    db: Database,
+    query: str,
+    limit: int,
+    offset: int = 0,
+    cursor_secret: str | None = None,
+) -> dict[str, Any]:
     """Search contacts through alias and trigram tables."""
 
     normalized = normalize_text(query)
     rows = db.query(
         """
-        SELECT DISTINCT c.id, c.display_name, c.emails_json, c.phones_json, c.organization, pa.confidence
+        SELECT c.id, c.display_name, c.emails_json, c.phones_json, c.organization, MAX(pa.confidence) AS confidence
         FROM contacts c
         LEFT JOIN person_aliases pa ON pa.contact_id = c.id
         WHERE c.deleted_at IS NULL
@@ -1095,17 +1292,21 @@ def search_contacts(db: Database, query: str, limit: int) -> dict[str, Any]:
             OR c.display_name LIKE ?
             OR c.emails_json LIKE ?
           )
-        ORDER BY COALESCE(pa.confidence, 0.5) DESC, c.display_name
-        LIMIT ?
+        GROUP BY c.id, c.display_name, c.emails_json, c.phones_json, c.organization
+        ORDER BY COALESCE(MAX(pa.confidence), 0.5) DESC, c.display_name
+        LIMIT ? OFFSET ?
         """,
-        (f"%{normalized}%", f"%{query}%", f"%{query}%", limit),
+        (f"%{normalized}%", f"%{query}%", f"%{query}%", limit, offset),
     )
     contacts = []
     for row in rows:
         contact = _contact_summary(row)
         contact["score"] = round(float(row.get("confidence") or 0.5), 3)
         contacts.append(contact)
-    return {"contacts": contacts}
+    response = {"contacts": contacts}
+    if cursor_secret:
+        response["next_cursor"] = next_cursor(offset, len(contacts), limit, cursor_secret)
+    return response
 
 
 def sync_status(db: Database) -> dict[str, Any]:
@@ -1240,6 +1441,16 @@ def _ics_temporal_value(value: str, timezone: str) -> datetime | date:
 
     parsed = datetime.fromisoformat(value)
     named_timezone = ZoneInfo(timezone)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=named_timezone)
+    return parsed.astimezone(named_timezone)
+
+
+def _datetime_value(value: str, timezone: str) -> datetime:
+    named_timezone = ZoneInfo(timezone)
+    if "T" not in value:
+        return datetime.combine(date.fromisoformat(value), datetime.min.time(), tzinfo=named_timezone)
+    parsed = datetime.fromisoformat(value)
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=named_timezone)
     return parsed.astimezone(named_timezone)

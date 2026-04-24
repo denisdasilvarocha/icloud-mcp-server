@@ -7,8 +7,12 @@ from icloud_mcp.db.connection import open_db
 from icloud_mcp.db.repositories import (
     create_calendar_event,
     ensure_defaults,
+    index_generation,
     list_contacts,
     list_events,
+    query_cache_get,
+    query_cache_set,
+    search_contacts,
     search_documents,
     sync_status,
     update_calendar_event,
@@ -107,6 +111,37 @@ class LocalMVPTests(unittest.TestCase):
         self.assertEqual(len(page["events"]), 1)
         self.assertIsNotNone(page["next_cursor"])
 
+    def test_calendar_recurring_event_expands_occurrences(self) -> None:
+        create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Weekly Sync",
+            start="2026-04-21T10:00:00+02:00",
+            end="2026-04-21T11:00:00+02:00",
+            timezone="Europe/Berlin",
+            recurrence={"freq": "weekly", "count": 3},
+        )
+
+        page = list_events(
+            self.db,
+            calendar_ids=[self.settings.default_calendar_id],
+            start="2026-04-01T00:00:00+02:00",
+            end="2026-05-31T00:00:00+02:00",
+            limit=10,
+            offset=0,
+            cursor_secret=self.settings.cursor_secret,
+        )
+
+        starts = [event["time"]["start"] for event in page["events"]]
+        self.assertEqual(
+            starts,
+            [
+                "2026-04-21T10:00:00+02:00",
+                "2026-04-28T10:00:00+02:00",
+                "2026-05-05T10:00:00+02:00",
+            ],
+        )
+
     def test_calendar_validation_rejects_bad_write(self) -> None:
         errors = validate_event_input(
             {
@@ -156,6 +191,71 @@ class LocalMVPTests(unittest.TestCase):
 
         self.assertEqual(mail[0]["id"], "mail_msg_1")
         self.assertEqual(contacts[0]["id"], "contact_1")
+
+    def test_search_filters_by_person_and_time(self) -> None:
+        create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Project Sync with Liesa",
+            start="2026-04-27T14:00:00+02:00",
+            end="2026-04-27T15:00:00+02:00",
+            timezone="Europe/Berlin",
+            attendees=[{"email": "liesa@example.com", "name": "Liesa"}],
+        )
+        create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Project Sync with Max",
+            start="2026-05-27T14:00:00+02:00",
+            end="2026-05-27T15:00:00+02:00",
+            timezone="Europe/Berlin",
+            attendees=[{"email": "max@example.com", "name": "Max"}],
+        )
+
+        results = search_documents(
+            self.db,
+            query="project sync",
+            domains=["calendar"],
+            limit=10,
+            offset=0,
+            snippet_chars=300,
+            start="2026-04-01T00:00:00+02:00",
+            end="2026-04-30T23:59:59+02:00",
+            person="Liesa",
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["title"], "Project Sync with Liesa")
+
+    def test_contact_search_uses_cursor_pagination(self) -> None:
+        for index in range(2):
+            upsert_contact(
+                self.db,
+                addressbook_id=self.settings.default_addressbook_id,
+                contact_id=f"contact_{index}",
+                href=f"local://contacts/{index}.vcf",
+                raw_vcard=f"BEGIN:VCARD\nFN:Example {index}\nEMAIL:example{index}@example.com\nEND:VCARD",
+                display_name=f"Example {index}",
+                emails=[f"example{index}@example.com"],
+            )
+
+        result = search_contacts(
+            self.db,
+            query="example.com",
+            limit=1,
+            offset=0,
+            cursor_secret=self.settings.cursor_secret,
+        )
+
+        self.assertEqual(len(result["contacts"]), 1)
+        self.assertIsNotNone(result["next_cursor"])
+
+    def test_query_cache_is_bound_to_index_generation(self) -> None:
+        generation = index_generation(self.db)
+        query_cache_set(self.db, "cache-key", {"results": []}, generation)
+
+        self.assertEqual(query_cache_get(self.db, "cache-key", generation), {"results": []})
+        self.assertIsNone(query_cache_get(self.db, "cache-key", generation + 1))
 
     def test_contact_list_without_addressbook_lists_synced_contacts(self) -> None:
         upsert_contact(

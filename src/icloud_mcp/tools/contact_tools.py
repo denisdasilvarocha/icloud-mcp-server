@@ -37,7 +37,14 @@ def register_contact_tools(mcp: object, db: Database, settings: Settings) -> Non
         return result or {"status": "not_found", "contact_id": contact_id}
 
     @mcp.tool(name="icloud.contacts.search", annotations=READ_ANNOTATIONS)
-    async def contacts_search(query: str, limit: int = 10) -> dict:
+    async def contacts_search(query: str, limit: int = 10, cursor: str | None = None) -> dict:
         """Search local contacts using aliases."""
 
-        return search_contacts(db, query=query, limit=max(1, min(limit, 50)))
+        cursor_payload = decode_cursor(cursor, settings.cursor_secret)
+        return search_contacts(
+            db,
+            query=query,
+            limit=max(1, min(limit, 50)),
+            offset=int(cursor_payload.get("offset", 0)),
+            cursor_secret=settings.cursor_secret,
+        )

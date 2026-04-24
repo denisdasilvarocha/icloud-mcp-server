@@ -7,8 +7,15 @@ from typing import Literal
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import freshness, index_generation, search_documents
-from icloud_mcp.util import decode_cursor, next_cursor, normalize_text, tokenize
+from icloud_mcp.db.repositories import (
+    freshness,
+    index_generation,
+    person_alias_terms,
+    query_cache_get,
+    query_cache_set,
+    search_documents,
+)
+from icloud_mcp.util import compact_json, decode_cursor, next_cursor, normalize_text, sha256_text, tokenize
 
 READ_ANNOTATIONS = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
 
@@ -35,7 +42,29 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
         cursor_payload = decode_cursor(cursor, settings.cursor_secret)
         offset = int(cursor_payload.get("offset", 0))
         safe_limit = max(1, min(limit, 50))
-        effective_query = " ".join(part for part in [query, person or ""] if part).strip()
+        person_terms = person_alias_terms(db, person)
+        effective_query = " ".join(part for part in [query, " ".join(person_terms)] if part).strip()
+        generation = index_generation(db)
+        cache_key = sha256_text(
+            compact_json(
+                {
+                    "query": query,
+                    "domains": selected_domains,
+                    "start": start.isoformat() if start else None,
+                    "end": end.isoformat() if end else None,
+                    "person": person,
+                    "limit": safe_limit,
+                    "include_body_snippets": include_body_snippets,
+                    "cursor": cursor_payload,
+                }
+            )
+        )
+        if freshness_policy != "refresh_if_stale":
+            cached = query_cache_get(db, cache_key, generation)
+            if cached:
+                cached["meta"] = {**cached.get("meta", {}), "cache": "hit", "index_generation": generation}
+                return cached
+
         rows = search_documents(
             db,
             query=effective_query,
@@ -43,10 +72,13 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
             limit=safe_limit,
             offset=offset,
             snippet_chars=settings.snippet_chars if include_body_snippets else 160,
+            start=start.isoformat() if start else None,
+            end=end.isoformat() if end else None,
+            person=person,
         )
 
         hints = _answer_hints(query, rows)
-        return {
+        response = {
             "query": query,
             "normalized_query": normalize_text(" ".join(tokenize(query))),
             "filters": {
@@ -64,9 +96,12 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
                 len(rows),
                 safe_limit,
                 settings.cursor_secret,
-                {"index_generation": index_generation(db)},
+                {"index_generation": generation},
             ),
+            "meta": {"cache": "miss", "index_generation": generation},
         }
+        query_cache_set(db, cache_key, response, generation)
+        return response
 
     @mcp.tool(name="icloud.mail.search", annotations=READ_ANNOTATIONS)
     async def mail_search(query: str, limit: int = 10, cursor: str | None = None) -> dict:
