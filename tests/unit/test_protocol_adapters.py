@@ -3,9 +3,12 @@ from __future__ import annotations
 import unittest
 from email import message_from_bytes
 
+from icalendar import Calendar
+
 from icloud_mcp.adapters.caldav_calendar import _synced_event
 from icloud_mcp.adapters.carddav_contacts import _contact_from_vcard
 from icloud_mcp.adapters.imap_mail import _message_from_email
+from icloud_mcp.db.repositories import build_ics
 
 
 class ProtocolAdapterParsingTests(unittest.TestCase):
@@ -79,6 +82,28 @@ END:VCALENDAR
         self.assertEqual(synced.uid, "event-1")
         self.assertEqual(synced.summary, "Project Sync with Liesa")
         self.assertEqual(synced.attendees, [{"email": "liesa@example.com", "name": "Liesa"}])
+
+    def test_build_ics_generates_parseable_calendar_data(self) -> None:
+        raw_ics = build_ics(
+            uid="event-1",
+            title="Codex MCP verification",
+            start="2026-04-30T09:10:00+02:00",
+            end="2026-04-30T09:20:00+02:00",
+            timezone="Europe/Berlin",
+            location="Berlin",
+            description="Verify CalDAV write data",
+            attendees=[{"email": "liesa@example.com", "name": "Liesa"}],
+            recurrence={"freq": "weekly", "count": 2},
+            alarms=[{"minutes_before": 15}],
+        )
+
+        calendar = Calendar.from_ical(raw_ics)
+        event = next(item for item in calendar.walk() if item.name == "VEVENT")
+
+        self.assertEqual(str(event.get("SUMMARY")), "Codex MCP verification")
+        self.assertEqual(str(event.get("UID")), "event-1")
+        self.assertEqual(str(event.get("LOCATION")), "Berlin")
+        self.assertEqual(str(event.get("ATTENDEE")), "mailto:liesa@example.com")
 
 
 if __name__ == "__main__":

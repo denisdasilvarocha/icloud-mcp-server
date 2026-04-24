@@ -23,7 +23,7 @@ def register_contact_tools(mcp: object, db: Database, settings: Settings) -> Non
         cursor_payload = decode_cursor(cursor, settings.cursor_secret)
         return list_contacts(
             db,
-            addressbook_id=addressbook_id or settings.default_addressbook_id,
+            addressbook_id=addressbook_id,
             limit=max(1, min(limit, 100)),
             offset=int(cursor_payload.get("offset", 0)),
             cursor_secret=settings.cursor_secret,

@@ -7,6 +7,7 @@ from icloud_mcp.db.connection import open_db
 from icloud_mcp.db.repositories import (
     create_calendar_event,
     ensure_defaults,
+    list_contacts,
     list_events,
     search_documents,
     sync_status,
@@ -155,6 +156,21 @@ class LocalMVPTests(unittest.TestCase):
 
         self.assertEqual(mail[0]["id"], "mail_msg_1")
         self.assertEqual(contacts[0]["id"], "contact_1")
+
+    def test_contact_list_without_addressbook_lists_synced_contacts(self) -> None:
+        upsert_contact(
+            self.db,
+            addressbook_id="addr_remote",
+            contact_id="contact_1",
+            href="https://contacts.example/addressbook/1.vcf",
+            raw_vcard="BEGIN:VCARD\nFN:Liesa Müller\nEMAIL:liesa@example.com\nEND:VCARD",
+            display_name="Liesa Müller",
+            emails=["liesa@example.com"],
+        )
+
+        result = list_contacts(self.db, addressbook_id=None, limit=10, offset=0, cursor_secret="test-secret")
+
+        self.assertEqual(result["contacts"][0]["id"], "contact_1")
 
     def test_sync_status_reports_generation_and_freshness(self) -> None:
         status = sync_status(self.db)

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from icalendar import Alarm, Calendar, Event
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
@@ -918,18 +921,29 @@ def upsert_mail_message(
     )
 
 
-def list_contacts(db: Database, addressbook_id: str, limit: int, offset: int, cursor_secret: str) -> dict[str, Any]:
+def list_contacts(
+    db: Database,
+    addressbook_id: str | None,
+    limit: int,
+    offset: int,
+    cursor_secret: str,
+) -> dict[str, Any]:
     """List compact contacts."""
 
+    filters = ["deleted_at IS NULL"]
+    parameters: list[Any] = []
+    if addressbook_id:
+        filters.append("addressbook_id = ?")
+        parameters.append(addressbook_id)
     rows = db.query(
-        """
+        f"""
         SELECT id, display_name, emails_json, phones_json, organization
         FROM contacts
-        WHERE addressbook_id = ? AND deleted_at IS NULL
+        WHERE {" AND ".join(filters)}
         ORDER BY display_name
         LIMIT ? OFFSET ?
         """,
-        (addressbook_id, limit, offset),
+        (*parameters, limit, offset),
     )
     contacts = [_contact_summary(row) for row in rows]
     return {"contacts": contacts, "next_cursor": next_cursor(offset, len(contacts), limit, cursor_secret)}
@@ -1187,39 +1201,48 @@ def build_ics(
     recurrence: dict[str, Any] | None,
     alarms: list[dict[str, Any]],
 ) -> str:
-    """Generate a compact VEVENT for cached local writes."""
+    """Generate a valid VEVENT for cached local and CalDAV writes."""
 
-    def escape(value: str) -> str:
-        return value.replace("\\", "\\\\").replace("\n", "\\n").replace(",", "\\,").replace(";", "\\;")
+    calendar = Calendar()
+    calendar.add("prodid", "-//icloud-mcp//EN")
+    calendar.add("version", "2.0")
+    calendar.add("X-WR-TIMEZONE", timezone)
 
-    lines = [
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//icloud-mcp//EN",
-        "BEGIN:VEVENT",
-        f"UID:{escape(uid)}",
-        f"SUMMARY:{escape(title)}",
-        f"DTSTART:{escape(start)}",
-        f"DTEND:{escape(end)}",
-        f"X-WR-TIMEZONE:{escape(timezone)}",
-    ]
+    event = Event()
+    event.add("uid", uid)
+    event.add("summary", title)
+    event.add("dtstart", _ics_temporal_value(start, timezone))
+    event.add("dtend", _ics_temporal_value(end, timezone))
     if location:
-        lines.append(f"LOCATION:{escape(location)}")
+        event.add("location", location)
     if description:
-        lines.append(f"DESCRIPTION:{escape(description)}")
+        event.add("description", description)
     for attendee in attendees:
         email = attendee.get("email", "")
         name = attendee.get("name", email)
-        lines.append(f"ATTENDEE;CN={escape(name)}:mailto:{escape(email)}")
+        event.add("attendee", f"mailto:{email}", parameters={"CN": name})
     if recurrence:
-        parts = [f"{key.upper()}={value}" for key, value in recurrence.items()]
-        lines.append(f"RRULE:{';'.join(parts)}")
+        event.add("rrule", {key.upper(): value for key, value in recurrence.items()})
     for alarm in alarms:
         minutes = int(alarm.get("minutes_before", 0))
         if minutes > 0:
-            lines.extend(["BEGIN:VALARM", f"TRIGGER:-PT{minutes}M", "ACTION:DISPLAY", "END:VALARM"])
-    lines.extend(["END:VEVENT", "END:VCALENDAR"])
-    return "\r\n".join(lines) + "\r\n"
+            valarm = Alarm()
+            valarm.add("action", "DISPLAY")
+            valarm.add("trigger", -timedelta(minutes=minutes))
+            event.add_component(valarm)
+    calendar.add_component(event)
+    return calendar.to_ical().decode("utf-8")
+
+
+def _ics_temporal_value(value: str, timezone: str) -> datetime | date:
+    if "T" not in value:
+        return date.fromisoformat(value)
+
+    parsed = datetime.fromisoformat(value)
+    named_timezone = ZoneInfo(timezone)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=named_timezone)
+    return parsed.astimezone(named_timezone)
 
 
 def _calendar_summary(row: dict[str, Any]) -> dict[str, Any]:

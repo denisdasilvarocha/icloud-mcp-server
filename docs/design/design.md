@@ -2,7 +2,7 @@
 
 ## 1. Recommended approach
 
-Build a **local-first or private-hosted FastMCP server** that talks to iCloud through standards-based protocols, keeps a local synchronized index, and serves all interactive MCP calls from the local cache/index whenever possible.
+Build a **local-first FastMCP server** that talks to one Apple account through standards-based protocols, keeps a local synchronized index, and serves all interactive MCP calls from the local cache/index whenever possible.
 
 The best architecture is:
 
@@ -20,7 +20,7 @@ For iCloud access, use:
 
 Apple documents iCloud Mail as IMAP/SMTP-based, with IMAP at `imap.mail.me.com`, SSL required, port `993`, and app-specific password authentication; POP is not supported. For this design, SMTP is unnecessary because Mail is read-only. ([Apple Support][1]) Apple also documents that third-party apps accessing iCloud Mail, Calendar, and Contacts use app-specific passwords, which require two-factor authentication and can be revoked; changing the primary Apple Account password revokes app-specific passwords. ([Apple Support][2]) Apple’s own iCloud security overview says Contacts and Calendars are built on CalDAV/CardDAV standards, which is the key reason this design should use standards-based DAV instead of private iCloud web APIs. ([Apple Support][3])
 
-FastMCP is a good fit because it exposes Python functions as MCP tools, resources, and prompts, generates schemas and validation from function signatures, supports STDIO for local desktop-style use, and supports HTTP/Streamable HTTP for remote deployments. ([FastMCP][4]) MCP itself models server capabilities as **Tools**, **Resources**, and **Prompts**, so the server should expose compact tools for operations and optional resources for object retrieval by URI. ([Model Context Protocol][5])
+FastMCP is a good fit because it exposes Python functions as MCP tools, resources, and prompts, generates schemas and validation from function signatures, and supports STDIO for local desktop-style use. ([FastMCP][4]) MCP itself models server capabilities as **Tools**, **Resources**, and **Prompts**, so the server should expose compact tools for operations and optional resources for object retrieval by URI. ([Model Context Protocol][5])
 
 ---
 
@@ -42,12 +42,12 @@ FastMCP is a good fit because it exposes Python functions as MCP tools, resource
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Service Layer                            │
-│  Query planner │ auth/ACL │ validation │ pagination │ redaction  │
+│  Query planner │ validation │ pagination │ redaction │ guardrails │
 └──────────┬───────────────────────────────┬──────────────────────┘
            ▼                               ▼
 ┌───────────────────────┐        ┌────────────────────────────────┐
 │ Local object database  │        │ Hybrid RAG/search layer         │
-│ SQLite/Postgres        │        │ FTS5/BM25 + vectors + reranker  │
+│ SQLite                 │        │ FTS5/BM25 + local vectors/rerank │
 │ mail/events/contacts   │        │ query cache + result snippets   │
 └──────────┬────────────┘        └────────────────┬───────────────┘
            │                                      │
@@ -77,15 +77,11 @@ Benefits:
 | Benefit                         | Reason                                                       |
 | ------------------------------- | ------------------------------------------------------------ |
 | Stronger privacy                | iCloud app-specific password stays on the user’s machine     |
-| Lower infrastructure complexity | No public HTTP endpoint, no multi-user auth system           |
-| Faster cache access             | Local SQLite/LanceDB/Qdrant storage                          |
+| Lower infrastructure complexity | No network service or shared account system                   |
+| Faster cache access             | Local SQLite storage                                          |
 | Easier secret storage           | macOS Keychain / Windows Credential Manager / Secret Service |
 
-### Optional: private HTTP server
-
-Use HTTP/Streamable HTTP only when multiple local clients or remote clients need access. FastMCP supports HTTP transport and exposes the MCP server over the network; unlike STDIO, one HTTP server can handle multiple clients simultaneously. ([FastMCP][7])
-
-For HTTP deployments, add FastMCP token verification or OAuth-compatible authorization. FastMCP supports token verification for HTTP transports, and MCP’s authorization specification treats protected MCP servers as OAuth 2.1 resource servers that validate bearer tokens and token audiences. ([FastMCP][8])
+This server is intentionally local-only and single-user.
 
 ---
 
@@ -321,7 +317,7 @@ contacts:
   root_url: "https://contacts.icloud.com/"
 ```
 
-Apple’s platform docs describe CardDAV account configuration as connecting to a CardDAV-compliant server with hostname, port, and optional principal URL, while Apple’s iCloud security overview confirms Contacts are standards-based CardDAV data. ([Apple Support][14]) Community and sync-client documentation commonly use `contacts.icloud.com` and note that iCloud may redirect/discover per-account hostnames such as `pxxx-contacts.icloud.com`; the implementation should therefore use CardDAV discovery rather than hard-coding a final per-user URL. ([GNOME Discourse][15])
+Apple’s platform docs describe CardDAV account configuration as connecting to a CardDAV-compliant server with hostname, port, and optional principal URL, while Apple’s iCloud security overview confirms Contacts are standards-based CardDAV data. ([Apple Support][14]) Community and sync-client documentation commonly use `contacts.icloud.com` and note that iCloud may redirect/discover account-specific hostnames such as `pxxx-contacts.icloud.com`; the implementation should therefore use CardDAV discovery rather than hard-coding a final URL. ([GNOME Discourse][15])
 
 ### Recommended Python approach
 
@@ -697,25 +693,10 @@ Use:
 ```text
 SQLite WAL
 + SQLite FTS5
-+ embedded vector index, such as LanceDB or sqlite-vec
-+ optional Redis only for remote/multi-process cache
++ SQLite-backed local embeddings, such as sqlite-vec
 ```
 
 SQLite FTS5 provides full-text search, BM25 ranking, prefix queries, tokenizer configuration, and trigram tokenization for substring-like matching. ([SQLite][17]) SQLite WAL mode is useful here because readers do not block writers and writers do not block readers in normal WAL operation, which fits “MCP reads while background sync writes.” ([SQLite][18])
-
-### Recommended for multi-user production
-
-Use:
-
-```text
-PostgreSQL
-+ pgvector
-+ Postgres full-text search
-+ Redis
-+ per-user encrypted credential vault
-```
-
-This is operationally heavier but better for multi-user HTTP deployments.
 
 ---
 
@@ -959,7 +940,7 @@ Calendar/contact queries often need exact names, dates, and titles. Mail body qu
 | Time-aware ranking | “next meeting” → upcoming events                                   |
 | Reranking          | Cross-domain result ordering                                       |
 
-Hybrid search combines vector and full-text search. LanceDB’s docs describe hybrid search as combining vector and full-text techniques with reranking, and Qdrant describes dense embeddings for semantic search plus sparse/keyword signals for exact matching. ([LanceDB][20])
+Hybrid search combines SQLite FTS with a local embedding/vector signal so exact matches, aliases, time windows, and semantic phrasing can all influence ranking without adding another persistent service.
 
 ---
 
@@ -1127,13 +1108,11 @@ Suggested boosts:
 | Layer                   | Storage                            | Purpose                                |
 | ----------------------- | ---------------------------------- | -------------------------------------- |
 | Process LRU             | In-memory                          | Hot object/view/search responses       |
-| Persistent object cache | SQLite/Postgres                    | Source of truth for synced iCloud data |
-| FTS index               | SQLite FTS5/Postgres FTS           | Fast exact search                      |
-| Vector index            | LanceDB/sqlite-vec/Qdrant/pgvector | Semantic search                        |
-| Query cache             | SQLite or Redis                    | Normalized query result reuse          |
+| Persistent object cache | SQLite                            | Source of truth for synced iCloud data |
+| FTS index               | SQLite FTS5                       | Fast exact search                      |
+| Vector-like index       | SQLite-backed local embeddings     | Semantic-style search                  |
+| Query cache             | SQLite                            | Normalized query result reuse          |
 | Connection pool         | IMAP/DAV clients                   | Avoid repeated setup overhead          |
-
-Redis is appropriate for HTTP or multi-process deployments because it is commonly used as a cache, supports memory limits, and can evict keys using configured eviction policies. ([Redis][21])
 
 ### Query cache key
 
@@ -1145,7 +1124,6 @@ sha256(
   + person_filter
   + limit
   + index_generation
-  + user_id
 )
 ```
 
@@ -1328,25 +1306,13 @@ Rules:
 4. Never log app-specific passwords.
 5. Redact emails and message bodies in debug logs unless explicitly enabled.
 6. Support password rotation.
-7. For HTTP deployment, never share one iCloud credential across users.
+7. Support exactly one configured Apple account per local server instance.
 
 Apple app-specific passwords can be revoked individually or all at once, and primary password changes revoke existing app-specific passwords, so the implementation must detect auth failures and surface a clear “credential revoked or expired” status. ([Apple Support][2])
 
-## 10.2 MCP authorization
+## 10.2 Local access boundary
 
-For local STDIO, credentials can be environment/keychain-based. For HTTP, require auth. MCP’s security guidance recommends authorization when a server accesses user-specific data such as emails or documents, and MCP’s authorization flow uses OAuth-style bearer tokens for protected MCP servers. ([Model Context Protocol][22])
-
-Required HTTP controls:
-
-| Control                    | Requirement |
-| -------------------------- | ----------- |
-| TLS                        | Required    |
-| Token audience validation  | Required    |
-| Per-user account isolation | Required    |
-| Scope checks               | Required    |
-| Audit logs                 | Required    |
-| Rate limits                | Required    |
-| No token passthrough       | Required    |
+This server runs locally over STDIO for one user and one Apple account. Do not expose it as a public or shared network service. Apple credentials must remain outside MCP tool arguments and should be loaded from local environment, local config, or OS keychain.
 
 ## 10.3 Tool annotations
 
@@ -1371,11 +1337,11 @@ Calendar create/update:
 }
 ```
 
-Annotations improve client UX but are not a security boundary; FastMCP explicitly describes them as advisory hints, so server-side validation and authorization are still required. ([FastMCP][4])
+Annotations improve client UX but are not a security boundary; FastMCP explicitly describes them as advisory hints, so server-side validation is still required. ([FastMCP][4])
 
 ## 10.4 Prompt injection and hostile content
 
-Mail bodies, calendar descriptions, contact notes, and invite text are untrusted data. OWASP’s MCP Top 10 calls out token/secret exposure, privilege escalation, tool poisoning, command injection, insufficient auth, and prompt/context injection as MCP risks. ([owasp.org][23])
+Mail bodies, calendar descriptions, contact notes, and invite text are untrusted data. OWASP’s MCP Top 10 calls out token/secret exposure, privilege escalation, tool poisoning, command injection, weak access controls, and prompt/context injection as MCP risks. ([owasp.org][23])
 
 Mitigations:
 
@@ -1501,35 +1467,13 @@ dependencies = [
 
 ## 12.2 Search dependencies
 
-Choose one local vector option:
-
-### Option A: SQLite-only
+Use SQLite-only local search storage:
 
 ```toml
 "sqlite-vec"
 ```
 
-Best for minimal deployment. `sqlite-vec` is an embedded SQLite vector search extension, but it is still pre-v1 according to its project page, so pin versions carefully. ([GitHub][25])
-
-### Option B: SQLite + LanceDB
-
-```toml
-"lancedb"
-```
-
-Best current balance for local hybrid search because LanceDB supports vector search, full-text search, hybrid search, and reranking patterns. ([LanceDB][20])
-
-### Option C: Qdrant
-
-```toml
-"qdrant-client[fastembed]"
-```
-
-Best for larger or remote deployments. Qdrant is a Rust-based vector search engine with filtering and hybrid dense/sparse retrieval support. ([Qdrant][26])
-
-### Recommended
-
-Use **SQLite + FTS5 + LanceDB** for the first production-quality version. Keep an abstraction so Qdrant or Postgres/pgvector can replace the vector backend later.
+Best for local-only deployment. SQLite remains the only persistent store. `sqlite-vec` is an embedded SQLite vector search extension, but it is still pre-v1 according to its project page, so pin versions carefully. ([GitHub][25])
 
 ---
 
@@ -1545,7 +1489,6 @@ icloud_mcp/
     security/
       secrets.py
       redaction.py
-      auth.py
     db/
       connection.py
       migrations/
@@ -1632,13 +1575,10 @@ scheduler = SyncScheduler(db=db, settings=settings)
 
 if __name__ == "__main__":
     scheduler.start_background()
-    if settings.transport == "http":
-        mcp.run(transport="http", host=settings.host, port=settings.port)
-    else:
-        mcp.run()
+    mcp.run()
 ```
 
-FastMCP supports constructor-level settings such as server identity, tools, auth, middleware, and behavior, and it can run with STDIO by default or HTTP transport when configured. ([FastMCP][27])
+FastMCP supports constructor-level settings such as server identity, tools, middleware, and behavior, and it runs with STDIO by default. ([FastMCP][6])
 
 ---
 
@@ -1770,14 +1710,10 @@ Deliver:
 * Token-budget enforcement.
 * Conflict and stale-index reporting.
 
-## Phase 7 — Production hardening
+## Phase 7 — Local hardening
 
 Deliver:
 
-* HTTP transport option.
-* Token verification/OAuth for HTTP.
-* Per-user isolation.
-* Redis cache option.
 * Metrics endpoint.
 * Dependency pinning and SBOM.
 * Security test suite.
@@ -1790,13 +1726,12 @@ Deliver:
 | --------------------- | ---------------------------------------------------------- |
 | iCloud API approach   | Use IMAP, CalDAV, CardDAV                                  |
 | Search strategy       | Local hybrid search, not direct iCloud search              |
-| RAG store             | SQLite FTS5 + LanceDB initially                            |
+| RAG store             | SQLite FTS5 + SQLite-backed local embeddings               |
 | Query cache           | Normalized query + index generation                        |
 | Mail sync             | Recent-first, body backfill in background                  |
 | Calendar write safety | ETag, validation, no delete tool                           |
 | Contact handling      | Alias expansion for people queries                         |
-| Deployment            | Local STDIO by default                                     |
-| Remote deployment     | HTTP only with token verification/OAuth                    |
+| Deployment            | Local STDIO only                                           |
 | Token efficiency      | IDs + snippets first, explicit view tools for full content |
 
 This design gives you a fast MCP server because searches run locally, reliable behavior because remote iCloud sync is isolated from interactive tool latency, and good answer quality because exact search, semantic search, contact aliases, calendar occurrences, and mail body chunks all participate in one retrieval pipeline.
@@ -1807,8 +1742,6 @@ This design gives you a fast MCP server because searches run locally, reliable b
 [4]: https://gofastmcp.com/servers/tools "Tools - FastMCP"
 [5]: https://modelcontextprotocol.io/specification/2025-11-25 "Specification - Model Context Protocol"
 [6]: https://gofastmcp.com/deployment/running-server?utm_source=chatgpt.com "Running Your Server"
-[7]: https://gofastmcp.com/deployment/http "HTTP Deployment - FastMCP"
-[8]: https://gofastmcp.com/servers/auth/token-verification "Token Verification - FastMCP"
 [9]: https://imapclient.readthedocs.io/en/3.0.1/api.html?utm_source=chatgpt.com "IMAPClient 3.0.1 documentation"
 [10]: https://caldav.readthedocs.io/latest/about.html "About the Python CalDAV Client Library — caldav 3.1.1.dev14+gf76d107d6 documentation"
 [11]: https://datatracker.ietf.org/doc/html/rfc4791?utm_source=chatgpt.com "RFC 4791 - Calendaring Extensions to WebDAV (CalDAV)"
@@ -1820,11 +1753,7 @@ This design gives you a fast MCP server because searches run locally, reliable b
 [17]: https://www.sqlite.org/fts5.html?utm_source=chatgpt.com "SQLite FTS5 Extension"
 [18]: https://www.sqlite.org/wal.html "Write-Ahead Logging"
 [19]: https://www.sqlite.org/fts5.html "SQLite FTS5 Extension"
-[20]: https://docs.lancedb.com/search/hybrid-search?utm_source=chatgpt.com "Hybrid Search"
-[21]: https://redis.io/docs/latest/develop/reference/eviction/ "Key eviction | Docs"
-[22]: https://modelcontextprotocol.io/docs/tutorials/security/authorization "Understanding Authorization in MCP - Model Context Protocol"
 [23]: https://owasp.org/www-project-mcp-top-10/ "OWASP MCP Top 10 | OWASP Foundation"
 [24]: https://aiosqlite.omnilib.dev/?utm_source=chatgpt.com "aiosqlite: Sqlite for AsyncIO — aiosqlite documentation"
 [25]: https://github.com/asg017/sqlite-vec?utm_source=chatgpt.com "asg017/sqlite-vec: A vector search ..."
-[26]: https://qdrant.tech/?utm_source=chatgpt.com "Qdrant - Vector Search Engine"
 [27]: https://gofastmcp.com/servers/server "The FastMCP Server - FastMCP"
