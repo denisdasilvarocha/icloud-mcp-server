@@ -41,7 +41,7 @@ class SearchService:
         cursor_payload: dict[str, Any],
     ) -> dict[str, Any]:
         plan = plan_query(query)
-        selected_domains = list(domains or _external_domains(plan.domains))
+        selected_domains = list(domains) if domains else ["mail", "calendar", "contacts"]
         db_domains = ["contact" if domain == "contacts" else domain for domain in selected_domains]
         safe_limit = max(1, min(limit, 50))
         offset = int(cursor_payload.get("offset", 0))

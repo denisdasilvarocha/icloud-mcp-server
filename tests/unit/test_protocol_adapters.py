@@ -94,6 +94,29 @@ agenda
         self.assertEqual(parsed.attachments[0]["filename"], "agenda.txt")
         self.assertEqual(parsed.calendar_invites[0]["uid"], "invite-1")
 
+    def test_imap_message_parser_skips_encrypted_body_text(self) -> None:
+        raw = b"""From: Liesa <liesa@example.com>
+To: Me <me@example.com>
+Subject: Encrypted
+Date: Fri, 24 Apr 2026 09:00:00 +0200
+Message-ID: <msg-enc@example.com>
+MIME-Version: 1.0
+Content-Type: application/pkcs7-mime
+
+encrypted payload that should not be indexed
+"""
+        parsed = _message_from_email(
+            mailbox_id="mb_inbox",
+            uid=3,
+            message=message_from_bytes(raw),
+            flags=(),
+            size_bytes=len(raw),
+            internal_date=None,
+        )
+
+        self.assertEqual(parsed.body_text, "")
+        self.assertEqual(parsed.body_unavailable_reason, "encrypted_or_signed")
+
     def test_carddav_vcard_parser_extracts_alias_fields(self) -> None:
         contact = _contact_from_vcard(
             addressbook_id="addr_1",

@@ -60,6 +60,11 @@ class FakeMailAdapter:
         )
 
 
+class FailingMailAdapter:
+    def sync_recent(self, **kwargs):
+        raise RuntimeError("app password expired for user@example.com")
+
+
 class FakeMailBackfillAdapter:
     def sync_backfill(self, **kwargs):
         return (
@@ -231,6 +236,54 @@ class FakeCalendarDeltaAdapter:
         raise AssertionError("delta sync should not fall back to window sync")
 
 
+class FakeCalendarNoTokenDeltaAdapter:
+    def __init__(self) -> None:
+        self.full_sync_called = False
+
+    def discover(self, **kwargs):
+        return [
+            SyncedCalendar(
+                id="cal_remote",
+                url="https://caldav.example/cal/",
+                display_name="Calendar",
+                color=None,
+                read_only=False,
+                sync_token="token-current",
+                ctag="ctag-current",
+            )
+        ]
+
+    def sync_event_changes(self, **kwargs):
+        return CalendarSyncResult(sync_token=None, changed=[], deleted=[]), []
+
+    def sync_events(self, **kwargs):
+        self.full_sync_called = True
+        return (
+            self.discover(),
+            [
+                SyncedCalendarEvent(
+                    id="cal_evt_full",
+                    calendar_id="cal_remote",
+                    href="https://caldav.example/cal/full.ics",
+                    uid="event-full",
+                    etag='"v2"',
+                    raw_ics="BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:event-full\nSUMMARY:Full Sync\nEND:VEVENT\nEND:VCALENDAR",
+                    summary="Full Sync",
+                    description=None,
+                    location=None,
+                    dtstart="2026-04-27T10:00:00+00:00",
+                    dtend="2026-04-27T11:00:00+00:00",
+                    timezone="UTC",
+                    attendees=[],
+                    organizer=None,
+                    rrule=None,
+                    recurrence_id=None,
+                    status=None,
+                )
+            ],
+        )
+
+
 class FakeContactsDeltaAdapter:
     def discover_addressbooks(self, **kwargs):
         return [
@@ -268,6 +321,48 @@ class FakeContactsDeltaAdapter:
 
     def sync_contacts(self, **kwargs):
         raise AssertionError("delta sync should not fall back to full contact sync")
+
+
+class FakeContactsNoTokenDeltaAdapter:
+    def __init__(self) -> None:
+        self.full_sync_called = False
+
+    def discover_addressbooks(self, **kwargs):
+        return [
+            SyncedAddressBook(
+                id="addr_remote",
+                url="https://contacts.example/addressbook/",
+                display_name="Contacts",
+                sync_token="token-current",
+                ctag="ctag-current",
+            )
+        ]
+
+    def sync_contact_changes(self, **kwargs):
+        return ContactSyncResult(sync_token=None, changed=[], deleted=[]), []
+
+    def sync_contacts(self, **kwargs):
+        self.full_sync_called = True
+        return (
+            self.discover_addressbooks(),
+            [
+                SyncedContact(
+                    id="contact_full",
+                    addressbook_id="addr_remote",
+                    href="https://contacts.example/addressbook/full.vcf",
+                    etag='"v2"',
+                    uid="contact-full",
+                    raw_vcard="BEGIN:VCARD\nFN:Full Sync Contact\nEMAIL:full@example.com\nEND:VCARD",
+                    display_name="Full Sync Contact",
+                    given_name="Full",
+                    family_name="Contact",
+                    emails=["full@example.com"],
+                    phones=[],
+                    organization=None,
+                    notes=None,
+                )
+            ],
+        )
 
 
 class SyncWorkerTests(unittest.TestCase):
@@ -339,6 +434,16 @@ class SyncWorkerTests(unittest.TestCase):
         self.assertIsNotNone(old_message["deleted_at"])
         self.assertEqual(new_results[0]["id"], "mail_msg_3")
 
+    def test_direct_mail_worker_records_adapter_failure_checkpoint(self) -> None:
+        result = MailSyncWorker(self.db, self.settings, FailingMailAdapter()).run_once()
+        status = sync_status(self.db)["workers"]["mail_sync_worker"]
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["error"], "RuntimeError")
+        self.assertEqual(status["status"], "error")
+        self.assertEqual(status["retry_count"], 1)
+        self.assertNotIn("user@example.com", result["message"])
+
     def test_calendar_sync_uses_sync_token_deletions(self) -> None:
         upsert_calendar_collection(
             self.db,
@@ -372,6 +477,24 @@ class SyncWorkerTests(unittest.TestCase):
         self.assertEqual(calendar["sync_token"], "token-new")
         self.assertIsNotNone(deleted["deleted_at"])
 
+    def test_calendar_delta_without_new_sync_token_falls_back_to_full_sync(self) -> None:
+        upsert_calendar_collection(
+            self.db,
+            account_id=self.settings.default_account_id,
+            calendar_id="cal_remote",
+            url="https://caldav.example/cal/",
+            display_name="Calendar",
+            sync_token="token-old",
+            ctag="ctag-old",
+        )
+
+        adapter = FakeCalendarNoTokenDeltaAdapter()
+        CalendarSyncWorker(self.db, self.settings, adapter).run_once()
+        event = self.db.query_one("SELECT summary FROM calendar_objects WHERE id = ?", ("cal_evt_full",))
+
+        self.assertTrue(adapter.full_sync_called)
+        self.assertEqual(event["summary"], "Full Sync")
+
     def test_contacts_sync_uses_sync_token_deletions(self) -> None:
         upsert_addressbook(
             self.db,
@@ -400,6 +523,24 @@ class SyncWorkerTests(unittest.TestCase):
         self.assertEqual(addressbook["sync_token"], "token-new")
         self.assertIsNotNone(deleted["deleted_at"])
         self.assertEqual(updated[0]["id"], "contact_1")
+
+    def test_contacts_delta_without_new_sync_token_falls_back_to_full_sync(self) -> None:
+        upsert_addressbook(
+            self.db,
+            account_id=self.settings.default_account_id,
+            addressbook_id="addr_remote",
+            url="https://contacts.example/addressbook/",
+            display_name="Contacts",
+            sync_token="token-old",
+            ctag="ctag-old",
+        )
+
+        adapter = FakeContactsNoTokenDeltaAdapter()
+        ContactsSyncWorker(self.db, self.settings, adapter).run_once()
+        contact = self.db.query_one("SELECT display_name FROM contacts WHERE id = ?", ("contact_full",))
+
+        self.assertTrue(adapter.full_sync_called)
+        self.assertEqual(contact["display_name"], "Full Sync Contact")
 
     def test_scheduler_marks_embeddings_ready(self) -> None:
         MailSyncWorker(self.db, self.settings, FakeMailAdapter()).run_once()

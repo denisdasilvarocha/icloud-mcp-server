@@ -5,7 +5,9 @@ import unittest
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import open_db
+from icloud_mcp.db.repositories import upsert_search_document
 from icloud_mcp.server import create_server
+from icloud_mcp.services.search import SearchService
 
 
 class MCPContractTests(unittest.TestCase):
@@ -63,6 +65,31 @@ class MCPContractTests(unittest.TestCase):
         for result in results.values():
             self.assertEqual(result["status"], "invalid_cursor")
             self.assertEqual(result["reason"], "tampered_or_malformed")
+
+    def test_search_default_domains_remain_all_public_domains(self) -> None:
+        upsert_search_document(
+            self.db,
+            document_id="doc_mail",
+            domain="mail",
+            object_id="mail_1",
+            title="Needle mail",
+            text="email-only default-domain needle",
+            metadata={"date": "2026-04-24T09:00:00+00:00"},
+        )
+
+        result = SearchService(self.db, Settings(database_path=":memory:", cursor_secret="contract-secret")).search(
+            query="email-only default-domain needle",
+            domains=None,
+            start=None,
+            end=None,
+            person=None,
+            limit=10,
+            include_body_snippets=True,
+            freshness_policy="allow_stale",
+            cursor_payload={"offset": 0},
+        )
+
+        self.assertEqual(result["results"][0]["id"], "mail_1")
 
 
 if __name__ == "__main__":

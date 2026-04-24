@@ -13,6 +13,7 @@ from icalendar import Alarm, Calendar, Event
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.indexing.chunker import chunk_text
+from icloud_mcp.indexing.rerank import reciprocal_rank_score
 from icloud_mcp.indexing.vector import VECTOR_MODEL, cosine_score, cosine_score_vectors, embedding_vector
 from icloud_mcp.indexing.vector_backend import delete_document_vectors, query_similar_chunks
 from icloud_mcp.util import (
@@ -286,7 +287,7 @@ def search_documents(
             (*domains, query_limit, offset),
         )
 
-    rows = _add_semantic_results(db, query=query, domains=domains, rows=rows, limit=query_limit)
+    rows = _rerank_rows(_add_semantic_results(db, query=query, domains=domains, rows=rows, limit=query_limit))
 
     results = []
     seen_documents: set[str] = set()
@@ -367,6 +368,34 @@ def _add_semantic_results(
         semantic_rows.append(candidate)
     semantic_rows.sort(key=lambda row: row["score"], reverse=True)
     return rows + semantic_rows[: max(0, limit - len(rows))]
+
+
+def _rerank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    scores: dict[str, float] = {}
+    merged: dict[str, dict[str, Any]] = {}
+    whys: dict[str, list[str]] = {}
+    for rank, row in enumerate(rows, start=1):
+        document_id = row["id"]
+        merged.setdefault(document_id, dict(row))
+        why_values = row.get("why") or ["lexical_match"]
+        whys.setdefault(document_id, [])
+        for why in why_values:
+            if why not in whys[document_id]:
+                whys[document_id].append(why)
+        weight = 1.2 if {"semantic_match", "sqlite_vec_match"} & set(why_values) else 1.0
+        scores[document_id] = scores.get(document_id, 0.0) + reciprocal_rank_score(rank) * weight
+        if row.get("score") is not None:
+            scores[document_id] += max(0.0, float(row["score"])) * 0.2
+    max_score = max(scores.values()) or 1.0
+    reranked = []
+    for document_id, row in merged.items():
+        row["score"] = round(scores[document_id] / max_score, 3)
+        row["why"] = whys.get(document_id) or ["lexical_match"]
+        reranked.append(row)
+    reranked.sort(key=lambda row: row["score"], reverse=True)
+    return reranked
 
 
 def _sqlite_vec_semantic_results(

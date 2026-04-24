@@ -308,12 +308,12 @@ def _message_from_email(
     internal_date: Any,
 ) -> SyncedMailMessage:
     subject = _decode_header(message.get("Subject", ""))
-    body_text = _body_text(message)
+    unavailable_reason = _body_unavailable_reason(message)
+    body_text = "" if unavailable_reason else _body_text(message)
     message_id = message.get("Message-ID")
     stable_id = _message_id(mailbox_id, uid, message_id)
     attachments = _attachments(message)
     invites = _calendar_invites(message)
-    unavailable_reason = _body_unavailable_reason(message)
     return SyncedMailMessage(
         id=stable_id,
         mailbox_id=mailbox_id,
