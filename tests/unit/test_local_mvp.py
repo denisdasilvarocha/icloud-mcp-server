@@ -15,12 +15,15 @@ from icloud_mcp.db.repositories import (
     search_contacts,
     search_documents,
     sync_status,
+    tombstone_contact,
     update_calendar_event,
     upsert_contact,
     upsert_mail_message,
     upsert_mailbox,
     validate_event_input,
 )
+from icloud_mcp.indexing.query_planner import plan_query
+from icloud_mcp.security.redaction import redact_text
 
 
 class LocalMVPTests(unittest.TestCase):
@@ -277,6 +280,111 @@ class LocalMVPTests(unittest.TestCase):
 
         self.assertIn("index_generation", status)
         self.assertIn("index_freshness", status)
+        self.assertIn("freshness_status", status)
+
+    def test_mail_index_uses_headers_invites_attachments_and_quote_suppression(self) -> None:
+        upsert_mailbox(
+            self.db, account_id="local", mailbox_id="mb_junk", name="Junk", last_sync_at="2026-04-24T00:00:00+00:00"
+        )
+        upsert_mail_message(
+            self.db,
+            account_id="local",
+            mailbox_id="mb_junk",
+            message_id="mail_msg_1",
+            uid=1,
+            header_message_id="<msg@example.com>",
+            in_reply_to="<root@example.com>",
+            references=["<root@example.com>"],
+            subject="Current contract deadline",
+            from_address={"name": "Liesa", "email": "liesa@example.com"},
+            to_addresses=[{"name": "Me", "email": "me@example.com"}],
+            bcc_addresses=[{"name": "Archive", "email": "archive@example.com"}],
+            date="2026-04-24T09:00:00+02:00",
+            preview="Current contract deadline",
+            body_text="Current answer is Friday.\n> quoted old answer Monday",
+            attachments=[{"filename": "contract.pdf", "mime_type": "application/pdf", "size_bytes": 100}],
+            calendar_invites=[{"uid": "invite-1", "summary": "Contract Review", "start": "2026-04-28T10:00:00+02:00"}],
+            has_attachments=True,
+        )
+
+        current = search_documents(self.db, query="Friday", domains=["mail"], limit=5, offset=0, snippet_chars=300)
+        quoted = search_documents(self.db, query="Monday", domains=["mail"], limit=5, offset=0, snippet_chars=300)
+        invite = search_documents(
+            self.db, query="Contract Review", domains=["mail_invite"], limit=5, offset=0, snippet_chars=300
+        )
+
+        self.assertEqual(current[0]["id"], "mail_msg_1")
+        self.assertEqual(quoted, [])
+        self.assertEqual(invite[0]["id"], "mail_msg_1")
+        self.assertEqual(current[0]["source_quality"], "spam")
+
+    def test_calendar_recurrence_exdate_and_rdate_are_expanded(self) -> None:
+        raw_ics = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:event-rrule
+SUMMARY:Daily Standup
+DTSTART:20260427T080000Z
+DTEND:20260427T083000Z
+RRULE:FREQ=DAILY;COUNT=3
+EXDATE:20260428T080000Z
+RDATE:20260430T080000Z
+END:VEVENT
+END:VCALENDAR
+"""
+        created = create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Daily Standup",
+            start="2026-04-27T08:00:00+00:00",
+            end="2026-04-27T08:30:00+00:00",
+            timezone="UTC",
+            recurrence={"freq": "daily", "count": 3},
+            raw_ics=raw_ics,
+        )
+
+        listed = list_events(
+            self.db,
+            calendar_ids=[self.settings.default_calendar_id],
+            start="2026-04-27T00:00:00+00:00",
+            end="2026-05-01T00:00:00+00:00",
+            limit=10,
+            offset=0,
+            cursor_secret=self.settings.cursor_secret,
+        )
+        starts = [event["time"]["start"] for event in listed["events"] if event["id"] == created["event_id"]]
+
+        self.assertIn("2026-04-27T08:00:00+00:00", starts)
+        self.assertNotIn("2026-04-28T08:00:00+00:00", starts)
+        self.assertIn("2026-04-30T08:00:00+00:00", starts)
+
+    def test_contact_alias_local_part_and_tombstone_cleanup(self) -> None:
+        upsert_contact(
+            self.db,
+            addressbook_id=self.settings.default_addressbook_id,
+            contact_id="contact_alias",
+            href="local://contacts/alias.vcf",
+            raw_vcard="BEGIN:VCARD\nFN:Elizabeth Example\nEMAIL:elizabeth@example.com\nEND:VCARD",
+            display_name="Elizabeth Example",
+            emails=["elizabeth@example.com"],
+            extra_aliases=[("Liesa", "nickname", 0.9)],
+        )
+
+        self.assertEqual(search_contacts(self.db, "elizabeth", 10)["contacts"][0]["id"], "contact_alias")
+        self.assertEqual(search_contacts(self.db, "Liesa", 10)["contacts"][0]["id"], "contact_alias")
+
+        tombstone_contact(self.db, "contact_alias")
+        self.assertEqual(search_contacts(self.db, "Liesa", 10)["contacts"], [])
+
+    def test_query_planner_dates_and_redaction(self) -> None:
+        plan = plan_query("What meetings do I have tomorrow?")
+
+        self.assertEqual(plan.intent, "calendar_time_lookup")
+        self.assertEqual(plan.domains, ["calendar"])
+        self.assertIsNotNone(plan.start)
+        self.assertEqual(
+            redact_text("Email liesa@example.com and use abcd-efgh-ijkl-mnop"), "Email l***@example.com and use ***"
+        )
 
 
 if __name__ == "__main__":

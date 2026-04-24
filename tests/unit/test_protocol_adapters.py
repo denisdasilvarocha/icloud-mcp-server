@@ -37,6 +37,58 @@ Content-Type: text/html; charset=utf-8
         self.assertIn("Monday at 14:00", parsed.body_text)
         self.assertNotIn("bad()", parsed.body_text)
 
+    def test_imap_message_parser_extracts_headers_attachments_and_invites(self) -> None:
+        raw = b"""From: Liesa <liesa@example.com>
+To: Me <me@example.com>
+Bcc: Archive <archive@example.com>
+Subject: Invite with attachment
+Date: Fri, 24 Apr 2026 09:00:00 +0200
+Message-ID: <msg-2@example.com>
+In-Reply-To: <root@example.com>
+References: <root@example.com> <prev@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b"
+
+--b
+Content-Type: text/plain; charset=utf-8
+
+Let's meet Monday.
+--b
+Content-Type: text/calendar; charset=utf-8
+
+BEGIN:VCALENDAR
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:invite-1
+SUMMARY:Project Sync
+DTSTART:20260427T120000Z
+DTEND:20260427T130000Z
+ORGANIZER;CN=Liesa:mailto:liesa@example.com
+ATTENDEE;CN=Me:mailto:me@example.com
+END:VEVENT
+END:VCALENDAR
+--b
+Content-Disposition: attachment; filename="agenda.txt"
+Content-Type: text/plain
+
+agenda
+--b--
+"""
+        parsed = _message_from_email(
+            mailbox_id="mb_inbox",
+            uid=2,
+            message=message_from_bytes(raw),
+            flags=(),
+            size_bytes=len(raw),
+            internal_date=None,
+        )
+
+        self.assertEqual(parsed.bcc_addresses[0]["email"], "archive@example.com")
+        self.assertEqual(parsed.in_reply_to, "<root@example.com>")
+        self.assertEqual(parsed.references, ["<root@example.com>", "<prev@example.com>"])
+        self.assertEqual(parsed.attachments[0]["filename"], "agenda.txt")
+        self.assertEqual(parsed.calendar_invites[0]["uid"], "invite-1")
+
     def test_carddav_vcard_parser_extracts_alias_fields(self) -> None:
         contact = _contact_from_vcard(
             addressbook_id="addr_1",
@@ -59,6 +111,27 @@ END:VCARD
         self.assertEqual(contact.given_name, "Liesa")
         self.assertEqual(contact.family_name, "Müller")
         self.assertEqual(contact.emails, ["liesa@example.com"])
+
+    def test_carddav_vcard_parser_extracts_extra_aliases(self) -> None:
+        contact = _contact_from_vcard(
+            addressbook_id="addr_1",
+            href="https://contacts.icloud.com/card/2.vcf",
+            etag='"abc"',
+            raw_vcard="""BEGIN:VCARD
+VERSION:3.0
+UID:contact-2
+FN:Elizabeth Example
+N:Example;Elizabeth;;;
+NICKNAME:Liesa
+EMAIL:elizabeth@example.com
+RELATED:Project Sponsor
+END:VCARD
+""",
+        )
+
+        aliases = {alias for alias, _, _ in contact.extra_aliases}
+        self.assertIn("Liesa", aliases)
+        self.assertIn("Project Sponsor", aliases)
 
     def test_caldav_ics_parser_extracts_event_fields(self) -> None:
         event = type("Event", (), {"url": "https://caldav.icloud.com/e/1.ics", "etag": '"v1"'})()

@@ -25,6 +25,10 @@ CREATE TABLE IF NOT EXISTS mailboxes (
   uid_validity TEXT,
   uid_next INTEGER,
   highest_modseq TEXT,
+  last_synced_uid INTEGER,
+  folder_quality TEXT DEFAULT 'normal',
+  backfill_cursor TEXT,
+  backfill_status TEXT,
   last_sync_at TEXT,
   UNIQUE(account_id, name)
 );
@@ -40,13 +44,19 @@ CREATE TABLE IF NOT EXISTS mail_messages (
   from_json TEXT,
   to_json TEXT,
   cc_json TEXT,
+  bcc_json TEXT,
+  in_reply_to TEXT,
+  references_json TEXT,
   date TEXT,
   flags_json TEXT,
   size_bytes INTEGER,
   preview TEXT,
   body_text TEXT,
   body_hash TEXT,
+  body_unavailable_reason TEXT,
+  body_indexed_chars INTEGER DEFAULT 0,
   has_attachments INTEGER DEFAULT 0,
+  attachments_json TEXT,
   deleted_at TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE(mailbox_id, uid)
@@ -150,6 +160,7 @@ CREATE TABLE IF NOT EXISTS search_chunks (
   id TEXT PRIMARY KEY,
   document_id TEXT NOT NULL,
   chunk_index INTEGER NOT NULL,
+  chunk_type TEXT DEFAULT 'body',
   text TEXT NOT NULL,
   token_count INTEGER,
   text_hash TEXT NOT NULL,
@@ -158,6 +169,13 @@ CREATE TABLE IF NOT EXISTS search_chunks (
   metadata_json TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE(document_id, chunk_index)
+);
+
+CREATE TABLE IF NOT EXISTS search_embeddings (
+  chunk_id TEXT PRIMARY KEY,
+  embedding_model TEXT NOT NULL,
+  vector_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
@@ -182,7 +200,24 @@ CREATE TABLE IF NOT EXISTS sync_checkpoints (
   name TEXT PRIMARY KEY,
   status TEXT NOT NULL,
   last_sync_at TEXT,
+  last_error TEXT,
+  retry_count INTEGER DEFAULT 0,
+  backoff_until TEXT,
+  progress_cursor TEXT,
   detail_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS metrics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  value REAL NOT NULL,
+  tags_json TEXT,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS query_cache (
@@ -214,6 +249,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at TEXT NOT NULL
 );
 """
+
+SCHEMA_VERSION = 2
 
 
 class Database:
@@ -264,4 +301,39 @@ def open_db(path: str | Path) -> Database:
     connection = sqlite3.connect(database_path, check_same_thread=False)
     db = Database(connection)
     db.executescript(SCHEMA)
+    run_migrations(db)
     return db
+
+
+def run_migrations(db: Database) -> None:
+    """Apply additive migrations for existing local SQLite caches."""
+
+    _ensure_column(db, "mailboxes", "last_synced_uid", "INTEGER")
+    _ensure_column(db, "mailboxes", "folder_quality", "TEXT DEFAULT 'normal'")
+    _ensure_column(db, "mailboxes", "backfill_cursor", "TEXT")
+    _ensure_column(db, "mailboxes", "backfill_status", "TEXT")
+    _ensure_column(db, "mail_messages", "bcc_json", "TEXT")
+    _ensure_column(db, "mail_messages", "in_reply_to", "TEXT")
+    _ensure_column(db, "mail_messages", "references_json", "TEXT")
+    _ensure_column(db, "mail_messages", "body_unavailable_reason", "TEXT")
+    _ensure_column(db, "mail_messages", "body_indexed_chars", "INTEGER DEFAULT 0")
+    _ensure_column(db, "mail_messages", "attachments_json", "TEXT")
+    _ensure_column(db, "search_chunks", "chunk_type", "TEXT DEFAULT 'body'")
+    _ensure_column(db, "sync_checkpoints", "last_error", "TEXT")
+    _ensure_column(db, "sync_checkpoints", "retry_count", "INTEGER DEFAULT 0")
+    _ensure_column(db, "sync_checkpoints", "backoff_until", "TEXT")
+    _ensure_column(db, "sync_checkpoints", "progress_cursor", "TEXT")
+    db.execute(
+        """
+        INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+        VALUES (?, datetime('now'))
+        """,
+        (SCHEMA_VERSION,),
+    )
+
+
+def _ensure_column(db: Database, table: str, column: str, definition: str) -> None:
+    existing = {row["name"] for row in db.query(f"PRAGMA table_info({table})")}
+    if column in existing:
+        return
+    db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

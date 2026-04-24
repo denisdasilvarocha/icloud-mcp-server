@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from icloud_mcp.db.connection import Database
+from icloud_mcp.indexing.vector import embedding_vector
 from icloud_mcp.sync.checkpoints import update_checkpoint
+from icloud_mcp.util import compact_json, utc_now
 
 
 @dataclass
@@ -20,8 +22,19 @@ class EmbeddingWorker:
     def run_once(self) -> dict:
         """Mark pending chunks as embedded by the local deterministic model."""
 
-        rows = self.db.query("SELECT id FROM search_chunks WHERE embedding_status = 'pending'")
+        rows = self.db.query("SELECT id, text FROM search_chunks WHERE embedding_status = 'pending'")
         for row in rows:
+            self.db.execute(
+                """
+                INSERT INTO search_embeddings (chunk_id, embedding_model, vector_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(chunk_id) DO UPDATE SET
+                  embedding_model = excluded.embedding_model,
+                  vector_json = excluded.vector_json,
+                  updated_at = excluded.updated_at
+                """,
+                (row["id"], self.model, compact_json(embedding_vector(row["text"])), utc_now()),
+            )
             self.db.execute(
                 """
                 UPDATE search_chunks

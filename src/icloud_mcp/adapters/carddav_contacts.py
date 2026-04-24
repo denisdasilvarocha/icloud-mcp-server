@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin
 
@@ -53,6 +53,7 @@ class SyncedContact:
     phones: list[str]
     organization: str | None
     notes: str | None
+    extra_aliases: list[tuple[str, str, float]] = field(default_factory=list)
 
 
 class CardDAVContactsAdapter:
@@ -202,6 +203,7 @@ def _contact_from_vcard(addressbook_id: str, href: str, raw_vcard: str, etag: st
     emails = [item.value for item in card.contents.get("email", []) if getattr(item, "value", None)]
     phones = [item.value for item in card.contents.get("tel", []) if getattr(item, "value", None)]
     organization = _organization(card)
+    extra_aliases = _extra_aliases(card)
     name = card.contents.get("n", [None])[0]
     given_name = getattr(getattr(name, "value", None), "given", None) if name else None
     family_name = getattr(getattr(name, "value", None), "family", None) if name else None
@@ -220,6 +222,7 @@ def _contact_from_vcard(addressbook_id: str, href: str, raw_vcard: str, etag: st
         phones=phones,
         organization=organization,
         notes=_first_value(card, "note"),
+        extra_aliases=extra_aliases,
     )
 
 
@@ -237,6 +240,21 @@ def _organization(card: Any) -> str | None:
     if isinstance(value, list):
         return " ".join(str(part) for part in value if part)
     return str(value) if value else None
+
+
+def _extra_aliases(card: Any) -> list[tuple[str, str, float]]:
+    aliases: list[tuple[str, str, float]] = []
+    for name, alias_type, confidence in [
+        ("nickname", "nickname", 0.9),
+        ("x-phonetic-first-name", "phonetic", 0.7),
+        ("x-phonetic-last-name", "phonetic", 0.7),
+        ("related", "relation", 0.65),
+    ]:
+        for item in card.contents.get(name, []):
+            value = getattr(item, "value", None)
+            if value:
+                aliases.append((str(value), alias_type, confidence))
+    return aliases
 
 
 def _text(element: ElementTree.Element, path: str) -> str | None:

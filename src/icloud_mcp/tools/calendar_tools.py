@@ -9,13 +9,13 @@ from icloud_mcp.adapters.caldav_calendar import CalDAVCalendarAdapter
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.db.repositories import (
-    build_ics,
     create_calendar_event,
     first_writable_calendar,
     get_calendar_collection,
     get_calendar_object,
     list_calendars,
     list_events,
+    patch_ics,
     update_calendar_event,
     upsert_calendar_collection,
     validate_event_input,
@@ -23,6 +23,9 @@ from icloud_mcp.db.repositories import (
     view_event,
 )
 from icloud_mcp.observability.audit import audit_calendar_write
+from icloud_mcp.schemas.calendar import CreateEventInput, UpdateEventInput
+from icloud_mcp.security.redaction import redact_text
+from icloud_mcp.security.secrets import load_icloud_credentials
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
 from icloud_mcp.util import decode_cursor
 
@@ -72,49 +75,54 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
         return result or {"status": "not_found", "event_id": event_id}
 
     @mcp.tool(name="icloud.calendar.create_event", annotations=WRITE_ANNOTATIONS)
-    async def calendar_create_event(input: dict) -> dict:
+    async def calendar_create_event(input: CreateEventInput) -> dict:
         """Create a calendar event after validating write guardrails."""
 
-        errors = validate_event_input(input)
+        input_data = input.model_dump()
+        errors = validate_event_input(input_data)
         if errors:
             return {"status": "invalid", "errors": errors}
-        if not settings.apple_id or not settings.app_password:
+        credentials = load_icloud_credentials(settings)
+        if not credentials:
             return {"status": "credential_missing", "message": "Configure ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD"}
 
         adapter = CalDAVCalendarAdapter()
-        calendar = _calendar_for_write(db, settings, adapter, input.get("calendar_id"))
+        calendar = _calendar_for_write(db, settings, adapter, input_data.get("calendar_id"))
         if not calendar:
             return {"status": "sync_required", "message": "No writable remote CalDAV calendar is known"}
 
         uid = f"cal_evt_{uuid.uuid4().hex}@icloud-mcp.local"
-        remote = adapter.create_event(
-            apple_id=settings.apple_id,
-            app_password=settings.app_password,
-            calendar_url=calendar["url"],
-            uid=uid,
-            title=input["title"],
-            start=input["start"],
-            end=input["end"],
-            timezone=input["timezone"],
-            location=input.get("location"),
-            description=input.get("description"),
-            attendees=input.get("attendees") or [],
-            recurrence=input.get("recurrence"),
-            alarms=input.get("alarms") or [],
-        )
+        try:
+            remote = adapter.create_event(
+                apple_id=credentials.apple_id,
+                app_password=credentials.app_password,
+                calendar_url=calendar["url"],
+                uid=uid,
+                title=input_data["title"],
+                start=input_data["start"],
+                end=input_data["end"],
+                timezone=input_data["timezone"],
+                location=input_data.get("location"),
+                description=input_data.get("description"),
+                attendees=input_data.get("attendees") or [],
+                recurrence=input_data.get("recurrence"),
+                alarms=input_data.get("alarms") or [],
+            )
+        except Exception as exc:
+            return _write_exception_status(exc, settings)
         result = create_calendar_event(
             db,
             calendar_id=calendar["id"],
-            title=input["title"],
-            start=input["start"],
-            end=input["end"],
-            timezone=input["timezone"],
-            location=input.get("location"),
-            description=input.get("description"),
-            attendees=input.get("attendees") or [],
-            recurrence=input.get("recurrence"),
-            alarms=input.get("alarms") or [],
-            request_id=input.get("request_id"),
+            title=input_data["title"],
+            start=input_data["start"],
+            end=input_data["end"],
+            timezone=input_data["timezone"],
+            location=input_data.get("location"),
+            description=input_data.get("description"),
+            attendees=input_data.get("attendees") or [],
+            recurrence=input_data.get("recurrence"),
+            alarms=input_data.get("alarms") or [],
+            request_id=input_data.get("request_id"),
             href=remote.href,
             uid=remote.uid,
             etag=remote.etag,
@@ -125,11 +133,12 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
         return result
 
     @mcp.tool(name="icloud.calendar.update_event", annotations=WRITE_ANNOTATIONS)
-    async def calendar_update_event(input: dict) -> dict:
+    async def calendar_update_event(input: UpdateEventInput) -> dict:
         """Update a full non-recurring event or recurring series."""
 
-        event_id = input.get("event_id")
-        patch = input.get("patch") or {}
+        input_data = input.model_dump()
+        event_id = input_data.get("event_id")
+        patch = input_data.get("patch") or {}
         if not event_id:
             return {"status": "invalid", "errors": ["event_id is required"]}
         errors = validate_event_patch(patch)
@@ -138,27 +147,31 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
         current = get_calendar_object(db, event_id)
         if not current:
             return {"status": "not_found", "event_id": event_id}
-        if not settings.apple_id or not settings.app_password:
+        credentials = load_icloud_credentials(settings)
+        if not credentials:
             return {"status": "credential_missing", "message": "Configure ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD"}
         if str(current["href"]).startswith("local://"):
             return {"status": "sync_required", "message": "Event has no remote CalDAV href. Sync calendar first."}
 
         raw_ics = _patched_ics(current, patch)
-        remote = CalDAVCalendarAdapter().update_event(
-            apple_id=settings.apple_id,
-            app_password=settings.app_password,
-            event_href=current["href"],
-            raw_ics=raw_ics,
-            expected_etag=input.get("etag") or current.get("etag"),
-        )
+        try:
+            remote = CalDAVCalendarAdapter().update_event(
+                apple_id=credentials.apple_id,
+                app_password=credentials.app_password,
+                event_href=current["href"],
+                raw_ics=raw_ics,
+                expected_etag=input_data.get("etag") or current.get("etag"),
+            )
+        except Exception as exc:
+            return _write_exception_status(exc, settings)
         if isinstance(remote, dict):
             return remote
         result = update_calendar_event(
             db,
             event_id=event_id,
             patch=patch,
-            etag=input.get("etag"),
-            scope=input.get("scope", "series"),
+            etag=input_data.get("etag"),
+            scope=input_data.get("scope", "series"),
             etag_override=remote.etag,
             raw_ics_override=remote.raw_ics,
         )
@@ -177,7 +190,10 @@ def _calendar_for_write(
         if calendar and not str(calendar["url"]).startswith("local://") and not bool(calendar["read_only"]):
             return calendar
 
-    for discovered in adapter.discover(apple_id=settings.apple_id or "", app_password=settings.app_password or ""):
+    credentials = load_icloud_credentials(settings)
+    if not credentials:
+        return None
+    for discovered in adapter.discover(apple_id=credentials.apple_id, app_password=credentials.app_password):
         upsert_calendar_collection(
             db,
             account_id=settings.default_account_id,
@@ -185,6 +201,8 @@ def _calendar_for_write(
             url=discovered.url,
             display_name=discovered.display_name,
             color=discovered.color,
+            sync_token=discovered.sync_token,
+            ctag=discovered.ctag,
             read_only=discovered.read_only,
         )
     if calendar_id:
@@ -195,20 +213,12 @@ def _calendar_for_write(
 
 
 def _patched_ics(current: dict, patch: dict) -> str:
-    attendees = patch.get("attendees")
-    if attendees is None:
-        from icloud_mcp.util import parse_json
+    return patch_ics(current["raw_ics"], patch, current)
 
-        attendees = parse_json(current.get("attendees_json"), [])
-    return build_ics(
-        uid=current["uid"],
-        title=patch.get("title", current["summary"]),
-        start=patch.get("start", current["dtstart"]),
-        end=patch.get("end", current["dtend"]),
-        timezone=patch.get("timezone", current["timezone"]),
-        location=patch.get("location", current["location"]),
-        description=patch.get("description", current["description"]),
-        attendees=attendees,
-        recurrence=patch.get("recurrence"),
-        alarms=[],
-    )
+
+def _write_exception_status(exc: Exception, settings: Settings) -> dict:
+    message = redact_text(str(exc), allow_unredacted=settings.allow_unredacted_debug) or exc.__class__.__name__
+    lowered = message.casefold()
+    if any(term in lowered for term in ["auth", "credential", "password", "unauthorized", "forbidden"]):
+        return {"status": "credential_revoked_or_expired", "message": message}
+    return {"status": "connectivity_error", "message": message, "queued": False}

@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from icloud_mcp.adapters.carddav_contacts import CardDAVContactsAdapter
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import upsert_addressbook, upsert_contact
+from icloud_mcp.db.repositories import tombstone_contact, upsert_addressbook, upsert_contact
+from icloud_mcp.security.secrets import load_icloud_credentials
 from icloud_mcp.sync.checkpoints import update_checkpoint
 from icloud_mcp.util import utc_now
 
@@ -25,15 +26,16 @@ class ContactsSyncWorker:
     def run_once(self) -> dict:
         """Run one contacts sync cycle."""
 
-        if not self.settings.apple_id or not self.settings.app_password:
+        credentials = load_icloud_credentials(self.settings)
+        if not credentials:
             result = {"status": "skipped", "reason": "credentials_missing"}
             update_checkpoint(self.db, self.name, "skipped", result)
             return result
 
         adapter = self.adapter or CardDAVContactsAdapter()
         addressbooks, contacts = adapter.sync_contacts(
-            apple_id=self.settings.apple_id,
-            app_password=self.settings.app_password,
+            apple_id=credentials.apple_id,
+            app_password=credentials.app_password,
         )
         now = utc_now()
         for addressbook in addressbooks:
@@ -61,7 +63,18 @@ class ContactsSyncWorker:
                 family_name=contact.family_name,
                 organization=contact.organization,
                 notes=contact.notes,
+                extra_aliases=contact.extra_aliases,
             )
+        synced_by_book: dict[str, set[str]] = {}
+        for contact in contacts:
+            synced_by_book.setdefault(contact.addressbook_id, set()).add(contact.id)
+        for addressbook_id, synced_ids in synced_by_book.items():
+            existing = self.db.query(
+                "SELECT id FROM contacts WHERE addressbook_id = ? AND deleted_at IS NULL", (addressbook_id,)
+            )
+            for row in existing:
+                if row["id"] not in synced_ids:
+                    tombstone_contact(self.db, row["id"])
         result = {"status": "ok", "addressbooks": len(addressbooks), "contacts": len(contacts)}
         update_checkpoint(self.db, self.name, "ok", result)
         return result

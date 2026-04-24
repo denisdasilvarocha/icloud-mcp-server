@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.indexing.embeddings import EmbeddingWorker
+from icloud_mcp.observability.metrics import record_metric
+from icloud_mcp.security.redaction import redact_text
 from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
 from icloud_mcp.sync.checkpoints import update_checkpoint
 from icloud_mcp.sync.contacts_sync import ContactsSyncWorker
@@ -42,8 +45,8 @@ class SyncScheduler:
         for worker in WORKERS:
             self.db.execute(
                 """
-                INSERT INTO sync_checkpoints (name, status, last_sync_at, detail_json)
-                VALUES (?, 'idle', NULL, ?)
+                INSERT INTO sync_checkpoints (name, status, last_sync_at, detail_json, retry_count)
+                VALUES (?, 'idle', NULL, ?, 0)
                 ON CONFLICT(name) DO NOTHING
                 """,
                 (worker, compact_json({"mode": "ready"})),
@@ -70,13 +73,24 @@ class SyncScheduler:
             CalendarSyncWorker(self.db, self.settings),
             MailSyncWorker(self.db, self.settings),
         ]:
+            started = time.perf_counter()
             try:
                 update_checkpoint(self.db, worker.name, "running", {"mode": "manual_or_background"})
                 results[worker.name] = worker.run_once()
+                record_metric(
+                    self.db, "sync.duration_ms", (time.perf_counter() - started) * 1000, {"worker": worker.name}
+                )
             except Exception as exc:
                 LOGGER.exception("Sync worker failed: %s", worker.name)
-                failure = {"status": "error", "error": exc.__class__.__name__, "message": str(exc)}
+                failure = {
+                    "status": "error",
+                    "error": exc.__class__.__name__,
+                    "message": redact_text(str(exc), allow_unredacted=self.settings.allow_unredacted_debug),
+                    "last_error": exc.__class__.__name__,
+                    "retry_count": 1,
+                }
                 update_checkpoint(self.db, worker.name, "error", failure)
+                record_metric(self.db, "sync.failure", 1, {"worker": worker.name, "error": exc.__class__.__name__})
                 results[worker.name] = failure
         update_checkpoint(self.db, "indexer_worker", "ok", {"mode": "inline_fts"})
         results["embedding_worker"] = EmbeddingWorker(self.db).run_once()

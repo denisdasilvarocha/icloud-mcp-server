@@ -5,6 +5,7 @@ from __future__ import annotations
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.db.repositories import sync_status
+from icloud_mcp.observability.metrics import metrics_snapshot
 from icloud_mcp.sync.scheduler import SyncScheduler
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
 
@@ -18,12 +19,17 @@ def register_sync_tools(mcp: object, db: Database, settings: Settings) -> None:
     async def sync_status_tool() -> dict:
         """Report local sync freshness and worker checkpoints."""
 
-        _ = settings
-        return sync_status(db)
+        return sync_status(db, settings.stale_after_seconds)
 
     @mcp.tool(name="icloud.sync.now", annotations=SYNC_ANNOTATIONS)
     async def sync_now_tool() -> dict:
         """Run one iCloud sync cycle using out-of-band credentials."""
 
         scheduler = SyncScheduler(db=db, settings=settings)
-        return {"results": scheduler.sync_now(), "status": sync_status(db)}
+        return {"results": scheduler.sync_now(), "status": sync_status(db, settings.stale_after_seconds)}
+
+    @mcp.tool(name="icloud.metrics.snapshot", annotations=READ_ANNOTATIONS)
+    async def metrics_snapshot_tool(limit: int = 100) -> dict:
+        """Return compact local metrics snapshot."""
+
+        return metrics_snapshot(db, limit=max(1, min(limit, 500)))

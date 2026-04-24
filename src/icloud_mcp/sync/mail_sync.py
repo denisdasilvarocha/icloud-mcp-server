@@ -8,6 +8,7 @@ from icloud_mcp.adapters.imap_mail import IMAPMailAdapter
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.db.repositories import update_mailbox_state, upsert_mail_message, upsert_mailbox
+from icloud_mcp.security.secrets import load_icloud_credentials
 from icloud_mcp.sync.checkpoints import update_checkpoint
 from icloud_mcp.util import utc_now
 
@@ -25,15 +26,16 @@ class MailSyncWorker:
     def run_once(self) -> dict:
         """Run one recent-mail sync cycle."""
 
-        if not self.settings.apple_id or not self.settings.app_password:
+        credentials = load_icloud_credentials(self.settings)
+        if not credentials:
             result = {"status": "skipped", "reason": "credentials_missing"}
             update_checkpoint(self.db, self.name, "skipped", result)
             return result
 
         adapter = self.adapter or IMAPMailAdapter()
         mailboxes, messages = adapter.sync_recent(
-            apple_id=self.settings.apple_id,
-            app_password=self.settings.app_password,
+            apple_id=credentials.apple_id,
+            app_password=credentials.app_password,
             days=self.settings.mail_sync_days,
             limit_per_mailbox=self.settings.mail_sync_limit_per_mailbox,
         )
@@ -52,6 +54,9 @@ class MailSyncWorker:
                 uid_validity=mailbox.uid_validity,
                 uid_next=mailbox.uid_next,
                 highest_modseq=mailbox.highest_modseq,
+                last_synced_uid=mailbox.last_synced_uid,
+                backfill_cursor=mailbox.backfill_cursor,
+                backfill_status=mailbox.backfill_status,
                 last_sync_at=now,
             )
         for message in messages:
@@ -65,13 +70,26 @@ class MailSyncWorker:
                 from_address=message.from_address,
                 to_addresses=message.to_addresses,
                 cc_addresses=message.cc_addresses,
+                bcc_addresses=message.bcc_addresses,
+                header_message_id=message.message_id,
+                in_reply_to=message.in_reply_to,
+                references=message.references,
                 date=message.date,
                 preview=message.preview,
                 body_text=message.body_text,
                 flags=message.flags,
                 size_bytes=message.size_bytes,
                 has_attachments=message.has_attachments,
+                attachments=message.attachments,
+                calendar_invites=message.calendar_invites,
+                body_unavailable_reason=message.body_unavailable_reason,
+                max_index_chars=self.settings.mail_index_body_chars,
             )
-        result = {"status": "ok", "mailboxes": len(mailboxes), "messages": len(messages)}
+        result = {
+            "status": "ok",
+            "mailboxes": len(mailboxes),
+            "messages": len(messages),
+            "last_synced_uid": max((message.uid for message in messages), default=None),
+        }
         update_checkpoint(self.db, self.name, "ok", result)
         return result

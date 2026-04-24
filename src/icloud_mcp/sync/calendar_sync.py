@@ -8,7 +8,8 @@ from datetime import UTC, datetime, timedelta
 from icloud_mcp.adapters.caldav_calendar import CalDAVCalendarAdapter
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import upsert_calendar_collection, upsert_calendar_object
+from icloud_mcp.db.repositories import tombstone_calendar_object, upsert_calendar_collection, upsert_calendar_object
+from icloud_mcp.security.secrets import load_icloud_credentials
 from icloud_mcp.sync.checkpoints import update_checkpoint
 from icloud_mcp.util import utc_now
 
@@ -26,7 +27,8 @@ class CalendarSyncWorker:
     def run_once(self) -> dict:
         """Run one calendar sync cycle."""
 
-        if not self.settings.apple_id or not self.settings.app_password:
+        credentials = load_icloud_credentials(self.settings)
+        if not credentials:
             result = {"status": "skipped", "reason": "credentials_missing"}
             update_checkpoint(self.db, self.name, "skipped", result)
             return result
@@ -36,8 +38,8 @@ class CalendarSyncWorker:
         start = (now_dt - timedelta(days=31 * self.settings.calendar_past_months)).date()
         end = (now_dt + timedelta(days=31 * self.settings.calendar_future_months)).date()
         calendars, events = adapter.sync_events(
-            apple_id=self.settings.apple_id,
-            app_password=self.settings.app_password,
+            apple_id=credentials.apple_id,
+            app_password=credentials.app_password,
             start=start,
             end=end,
         )
@@ -50,6 +52,8 @@ class CalendarSyncWorker:
                 url=calendar.url,
                 display_name=calendar.display_name,
                 color=calendar.color,
+                sync_token=calendar.sync_token,
+                ctag=calendar.ctag,
                 read_only=calendar.read_only,
                 last_sync_at=now,
             )
@@ -74,6 +78,24 @@ class CalendarSyncWorker:
                 recurrence_id=event.recurrence_id,
                 status=event.status,
             )
+        synced_by_calendar: dict[str, set[str]] = {}
+        for event in events:
+            synced_by_calendar.setdefault(event.calendar_id, set()).add(event.id)
+        for calendar_id, synced_ids in synced_by_calendar.items():
+            existing = self.db.query(
+                """
+                SELECT id
+                FROM calendar_objects
+                WHERE calendar_id = ?
+                  AND deleted_at IS NULL
+                  AND dtend >= ?
+                  AND dtstart <= ?
+                """,
+                (calendar_id, start.isoformat(), end.isoformat()),
+            )
+            for row in existing:
+                if row["id"] not in synced_ids:
+                    tombstone_calendar_object(self.db, row["id"])
         result = {"status": "ok", "calendars": len(calendars), "events": len(events)}
         update_checkpoint(self.db, self.name, "ok", result)
         return result

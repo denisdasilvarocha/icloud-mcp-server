@@ -6,6 +6,8 @@ Audit date: 2026-04-24
 
 Scope: this file lists requirements from the Design Spec that are not implemented or only partially implemented in the current codebase. It does not repeat requirements that are already covered end to end.
 
+Implementation update: the local server now implements the bulk of these gaps in code, including MCP resources/prompts, a search service layer, richer mail parsing/indexing, recurrence exception expansion, contact alias improvements, query planning, multi-chunk/per-occurrence indexing, freshness status, keychain fallback, redaction, metrics, schema migrations, cleanup paths, and expanded tests. The remaining caveats are live protocol edge cases that need fake-server or provider-backed verification before they can be marked fully complete: IMAP QRESYNC/CONDSTORE behavior, CalDAV/CardDAV `sync-collection` deletion semantics, and wire-level CalDAV `If-Match` enforcement.
+
 ## Summary
 
 The project implements the local-first FastMCP scaffold, SQLite schema, core tools, protocol adapters, sync workers, FTS search, hashed semantic scoring, cursor signing, calendar write guardrails, and basic audit logging.
@@ -1024,4 +1026,3 @@ Remaining work:
 - Link this file from README.
 - Add "Implemented", "Partial", and "Not implemented" capability tables.
 - Document operational limits, especially recurrence exceptions, incremental sync gaps, and attachment indexing.
-

@@ -28,6 +28,8 @@ class SyncedCalendar:
     display_name: str
     color: str | None
     read_only: bool
+    sync_token: str | None = None
+    ctag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,8 @@ def _calendar_from_object(calendar: Any) -> SyncedCalendar:
         display_name=display_name,
         color=_optional_attr(calendar, "color"),
         read_only=bool(getattr(calendar, "read_only", False)),
+        sync_token=_call_optional(calendar, "get_sync_token") or _optional_attr(calendar, "sync_token"),
+        ctag=_call_optional(calendar, "get_ctag") or _optional_attr(calendar, "ctag"),
     )
 
 
@@ -282,6 +286,17 @@ def _etag(event: Any) -> str | None:
 def _optional_attr(value: Any, name: str) -> str | None:
     attr = getattr(value, name, None)
     return str(attr) if attr else None
+
+
+def _call_optional(value: Any, name: str) -> str | None:
+    method = getattr(value, name, None)
+    if not callable(method):
+        return None
+    try:
+        result = method()
+    except Exception:
+        return None
+    return str(result) if result else None
 
 
 def _uid_from_ics(raw_ics: str) -> str:

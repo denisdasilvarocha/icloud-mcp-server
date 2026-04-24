@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import email
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
 from typing import Any
+
+from icalendar import Calendar
 
 from icloud_mcp.indexing.normalizers import html_to_text
 from icloud_mcp.util import truncate
@@ -33,6 +35,9 @@ class SyncedMailbox:
     uid_validity: str | None
     uid_next: int | None
     highest_modseq: str | None
+    last_synced_uid: int | None = None
+    backfill_cursor: str | None = None
+    backfill_status: str | None = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +58,12 @@ class SyncedMailMessage:
     preview: str
     body_text: str
     has_attachments: bool
+    bcc_addresses: list[dict[str, str]] = field(default_factory=list)
+    in_reply_to: str | None = None
+    references: list[str] = field(default_factory=list)
+    attachments: list[dict[str, Any]] = field(default_factory=list)
+    calendar_invites: list[dict[str, Any]] = field(default_factory=list)
+    body_unavailable_reason: str | None = None
 
 
 class IMAPMailAdapter:
@@ -89,6 +100,7 @@ class IMAPMailAdapter:
             for folder in folder_names:
                 select_info = client.select_folder(folder, readonly=True)
                 mailbox_id = _mailbox_id(folder)
+                uids = client.search(["SINCE", since])
                 synced_mailboxes.append(
                     SyncedMailbox(
                         id=mailbox_id,
@@ -96,9 +108,11 @@ class IMAPMailAdapter:
                         uid_validity=_string_value(select_info.get(b"UIDVALIDITY")),
                         uid_next=_int_value(select_info.get(b"UIDNEXT")),
                         highest_modseq=_string_value(select_info.get(b"HIGHESTMODSEQ")),
+                        last_synced_uid=max((int(uid) for uid in uids), default=None),
+                        backfill_cursor=f"{since.isoformat()}:{folder}",
+                        backfill_status="partial",
                     )
                 )
-                uids = client.search(["SINCE", since])
                 if limit_per_mailbox > 0:
                     uids = sorted(uids)[-limit_per_mailbox:]
                 if not uids:
@@ -147,6 +161,9 @@ def _message_from_email(
     body_text = _body_text(message)
     message_id = message.get("Message-ID")
     stable_id = _message_id(mailbox_id, uid, message_id)
+    attachments = _attachments(message)
+    invites = _calendar_invites(message)
+    unavailable_reason = _body_unavailable_reason(message)
     return SyncedMailMessage(
         id=stable_id,
         mailbox_id=mailbox_id,
@@ -161,7 +178,13 @@ def _message_from_email(
         size_bytes=size_bytes,
         preview=truncate(body_text, 240),
         body_text=body_text,
-        has_attachments=_has_attachments(message),
+        has_attachments=bool(attachments),
+        bcc_addresses=_addresses(message.get("Bcc", "")),
+        in_reply_to=message.get("In-Reply-To"),
+        references=_references(message.get("References", "")),
+        attachments=attachments,
+        calendar_invites=invites,
+        body_unavailable_reason=unavailable_reason,
     )
 
 
@@ -201,6 +224,79 @@ def _append_part_text(part: Message, plain_parts: list[str], html_parts: list[st
         plain_parts.append(text)
 
 
+def _attachments(message: Message) -> list[dict[str, Any]]:
+    attachments = []
+    for part in message.walk():
+        disposition = (part.get("Content-Disposition") or "").lower()
+        filename = part.get_filename()
+        if "attachment" not in disposition and not filename:
+            continue
+        payload = part.get_payload(decode=True) or b""
+        attachments.append(
+            {
+                "filename": _decode_header(filename or ""),
+                "mime_type": part.get_content_type(),
+                "size_bytes": len(payload),
+                "content_id": (part.get("Content-ID") or "").strip("<>") or None,
+                "disposition": disposition.split(";", 1)[0] or "attachment",
+            }
+        )
+    return attachments
+
+
+def _calendar_invites(message: Message) -> list[dict[str, Any]]:
+    invites = []
+    for part in message.walk():
+        if part.get_content_type() != "text/calendar":
+            continue
+        raw = _part_text(part)
+        if not raw:
+            continue
+        try:
+            calendar = Calendar.from_ical(raw)
+        except ValueError:
+            continue
+        method = str(calendar.get("METHOD", "")) or None
+        for component in calendar.walk():
+            if component.name != "VEVENT":
+                continue
+            attendees = [str(attendee).replace("mailto:", "") for attendee in _as_list(component.get("ATTENDEE"))]
+            organizer = component.get("ORGANIZER")
+            invites.append(
+                {
+                    "uid": str(component.get("UID", "")) or None,
+                    "method": method,
+                    "summary": str(component.get("SUMMARY", "")) or None,
+                    "start": _date_value(getattr(component.get("DTSTART"), "dt", None)),
+                    "end": _date_value(getattr(component.get("DTEND"), "dt", None)),
+                    "timezone": _timezone_name(getattr(component.get("DTSTART"), "dt", None)),
+                    "organizer": str(organizer).replace("mailto:", "") if organizer else None,
+                    "attendees": attendees,
+                }
+            )
+    return invites
+
+
+def _part_text(part: Message) -> str:
+    payload = part.get_payload(decode=True)
+    if payload is None:
+        raw = part.get_payload()
+        return raw if isinstance(raw, str) else ""
+    charset = part.get_content_charset() or "utf-8"
+    return payload.decode(charset, errors="replace")
+
+
+def _body_unavailable_reason(message: Message) -> str | None:
+    content_type = message.get_content_type()
+    if content_type == "multipart/encrypted":
+        return "encrypted"
+    for part in message.walk():
+        part_type = part.get_content_type()
+        if part_type in {"application/pkcs7-mime", "application/x-pkcs7-mime", "application/pgp-encrypted"}:
+            return "encrypted_or_signed"
+    return None
+
+
 def _decode_header(value: str) -> str:
     if not value:
         return ""
@@ -230,6 +326,29 @@ def _message_date(message: Message, internal_date: Any) -> str:
 
 def _has_attachments(message: Message) -> bool:
     return any((part.get("Content-Disposition") or "").lower().startswith("attachment") for part in message.walk())
+
+
+def _references(value: str) -> list[str]:
+    return [part for part in value.split() if part]
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _date_value(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return None
+
+
+def _timezone_name(value: Any) -> str | None:
+    tzinfo = getattr(value, "tzinfo", None)
+    return str(tzinfo) if tzinfo else None
 
 
 def _mailbox_id(name: str) -> str:
