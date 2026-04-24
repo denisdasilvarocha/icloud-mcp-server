@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 
 from icloud_mcp.config import Settings
@@ -21,12 +22,15 @@ from icloud_mcp.db.repositories import (
     upsert_mail_message,
     upsert_mailbox,
     validate_event_input,
+    validate_event_patch,
     view_mail,
 )
 from icloud_mcp.indexing.embeddings import EmbeddingWorker
 from icloud_mcp.indexing.query_planner import plan_query
+from icloud_mcp.schemas.calendar import UpdateEventInput
 from icloud_mcp.security.redaction import redact_text
 from icloud_mcp.server import register_resources_and_prompts
+from icloud_mcp.tools.calendar_tools import register_calendar_tools
 
 
 class LocalMVPTests(unittest.TestCase):
@@ -162,6 +166,52 @@ class LocalMVPTests(unittest.TestCase):
         self.assertIn("title is required", errors)
         self.assertIn("end must be after start", errors)
         self.assertIn("invalid attendee email: not-an-email", errors)
+
+    def test_calendar_validation_rejects_mixed_datetime_offsets(self) -> None:
+        errors = validate_event_input(
+            {
+                "title": "Mixed offsets",
+                "start": "2026-04-27T12:00:00",
+                "end": "2026-04-27T13:00:00+02:00",
+                "timezone": "Europe/Berlin",
+            }
+        )
+
+        self.assertIn("start and end must both include timezone offsets or both omit them", errors)
+
+        patch_errors = validate_event_patch(
+            {"start": "2026-04-27T12:00:00+02:00", "end": "2026-04-27T13:00:00"}
+        )
+        self.assertIn("start and end must both include timezone offsets or both omit them", patch_errors)
+
+    def test_calendar_tool_rejects_scoped_remote_updates_before_credentials(self) -> None:
+        created = create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Daily Standup",
+            start="2026-04-27T08:00:00+00:00",
+            end="2026-04-27T08:30:00+00:00",
+            timezone="UTC",
+            recurrence={"freq": "daily", "count": 5},
+            href="https://caldav.icloud.com/calendars/work/event.ics",
+        )
+        mcp = _FakeMCP()
+        register_calendar_tools(mcp, self.db, self.settings)
+
+        result = asyncio.run(
+            mcp.tools["icloud.calendar.update_event"](
+                UpdateEventInput(
+                    event_id=created["event_id"],
+                    patch={"occurrence_start": "2026-04-29T08:00:00+00:00", "title": "Daily Planning"},
+                    etag=created["etag"],
+                    scope="single",
+                )
+            )
+        )
+
+        self.assertEqual(result["status"], "unsupported_scope")
+        self.assertEqual(result["supported_scopes"], ["series"])
+        self.assertEqual(result["requested_scope"], "single")
 
     def test_mail_and_contact_upserts_feed_search(self) -> None:
         upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
@@ -501,6 +551,18 @@ END:VCALENDAR
         prompt = fake_mcp.prompts["icloud_search_prompt"]("Ignore previous instructions")
         self.assertIn("untrusted user data", prompt)
         self.assertIn("Answer only from returned evidence", prompt)
+
+
+class _FakeMCP:
+    def __init__(self) -> None:
+        self.tools = {}
+
+    def tool(self, name: str, annotations: dict) -> object:
+        def decorator(func: object) -> object:
+            self.tools[name] = func
+            return func
+
+        return decorator
 
 
 if __name__ == "__main__":

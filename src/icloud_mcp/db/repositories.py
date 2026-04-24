@@ -2056,6 +2056,8 @@ def validate_event_input(input_data: dict[str, Any]) -> list[str]:
             end_dt = datetime.fromisoformat(str(end))
             if end_dt <= start_dt:
                 errors.append("end must be after start")
+        except TypeError:
+            errors.append("start and end must both include timezone offsets or both omit them")
         except ValueError:
             errors.append("start and end must be ISO 8601 datetimes")
 

@@ -52,8 +52,9 @@ Apple credentials are never accepted as MCP tool arguments.
 ## Security Checks
 
 ```bash
-uv run ruff check .
-uv run python -m unittest discover -s tests
+uv run --extra dev ruff check .
+uv run --extra dev coverage run -m unittest discover -s tests
+uv run --extra dev coverage report
 uv run --with cyclonedx-bom cyclonedx-py environment -o sbom.cdx.json
 ```
 
@@ -64,5 +65,6 @@ Current fake protocol and contract coverage lives in `tests/unit/test_protocol_a
 ## Test
 
 ```bash
-python -m unittest discover -s tests
+uv run --extra dev coverage run -m unittest discover -s tests
+uv run --extra dev coverage report
 ```

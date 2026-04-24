@@ -174,6 +174,14 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
         current = get_calendar_object(db, event_id)
         if not current:
             return {"status": "not_found", "event_id": event_id}
+        scope = input_data.get("scope", "series")
+        if scope != "series":
+            return {
+                "status": "unsupported_scope",
+                "supported_scopes": ["series"],
+                "requested_scope": scope,
+                "message": "Remote CalDAV scoped occurrence updates are not supported.",
+            }
         credentials = load_icloud_credentials(settings)
         if not credentials:
             return {"status": "credential_missing", "message": "Configure ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD"}
@@ -207,7 +215,7 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
             event_id=event_id,
             patch=patch,
             etag=input_data.get("etag"),
-            scope=input_data.get("scope", "series"),
+            scope=scope,
             etag_override=remote.etag,
             raw_ics_override=remote.raw_ics,
         )

@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "coverage[toml]",
   "ruff",
 ]
 
@@ -50,3 +51,14 @@ indent-style = "space"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/icloud_mcp"]
+
+[tool.coverage.run]
+source = ["src/icloud_mcp"]
+branch = false
+relative_files = true
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_empty = true
+precision = 2

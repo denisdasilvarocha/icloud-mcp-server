@@ -12,7 +12,7 @@ from icloud_mcp.adapters.carddav_contacts import (
 from icloud_mcp.adapters.carddav_contacts import (
     _parse_sync_collection_response as _parse_carddav_sync_collection_response,
 )
-from icloud_mcp.adapters.imap_mail import _message_from_email
+from icloud_mcp.adapters.imap_mail import _message_from_email, _message_id
 from icloud_mcp.db.repositories import build_ics
 
 
@@ -116,6 +116,14 @@ encrypted payload that should not be indexed
 
         self.assertEqual(parsed.body_text, "")
         self.assertEqual(parsed.body_unavailable_reason, "encrypted_or_signed")
+
+    def test_imap_stable_id_includes_mailbox_and_uid(self) -> None:
+        first = _message_id("mb_inbox", 1, "<shared@example.com>")
+        duplicate_in_archive = _message_id("mb_archive", 1, "<shared@example.com>")
+        duplicate_in_mailbox = _message_id("mb_inbox", 2, "<shared@example.com>")
+
+        self.assertNotEqual(first, duplicate_in_archive)
+        self.assertNotEqual(first, duplicate_in_mailbox)
 
     def test_carddav_vcard_parser_extracts_alias_fields(self) -> None:
         contact = _contact_from_vcard(

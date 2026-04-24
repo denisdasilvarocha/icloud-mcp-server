@@ -507,7 +507,7 @@ def _mailbox_id(name: str) -> str:
 
 
 def _message_id(mailbox_id: str, uid: int, message_id: str | None) -> str:
-    source = message_id or f"{mailbox_id}:{uid}"
+    source = f"{mailbox_id}:{uid}:{message_id or ''}"
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
     return f"mail_msg_{digest}"
 
