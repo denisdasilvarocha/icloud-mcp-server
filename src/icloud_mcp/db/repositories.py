@@ -13,7 +13,8 @@ from icalendar import Alarm, Calendar, Event
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.indexing.chunker import chunk_text
-from icloud_mcp.indexing.vector import cosine_score, cosine_score_vectors, embedding_vector
+from icloud_mcp.indexing.vector import VECTOR_MODEL, cosine_score, cosine_score_vectors, embedding_vector
+from icloud_mcp.indexing.vector_backend import delete_document_vectors, query_similar_chunks
 from icloud_mcp.util import (
     compact_json,
     next_cursor,
@@ -179,6 +180,11 @@ def upsert_search_document(
         """,
         (document_id, domain, object_id, occurrence_id, title, text, metadata_json, now),
     )
+    delete_document_vectors(db, document_id)
+    db.execute(
+        "DELETE FROM search_embeddings WHERE chunk_id IN (SELECT id FROM search_chunks WHERE document_id = ?)",
+        (document_id,),
+    )
     db.execute("DELETE FROM search_chunks WHERE document_id = ?", (document_id,))
     db.execute("DELETE FROM search_fts WHERE document_id = ?", (document_id,))
     for chunk_index, chunk in enumerate(chunk_rows):
@@ -217,11 +223,11 @@ def upsert_search_document(
     db.execute(
         """
         INSERT OR REPLACE INTO search_embeddings (chunk_id, embedding_model, vector_json, updated_at)
-        SELECT id, 'local-hashed-bow-v1', ?, ?
+        SELECT id, ?, ?, ?
         FROM search_chunks
         WHERE document_id = ? AND chunk_index = 0
         """,
-        (compact_json(embedding_vector(text)), now, document_id),
+        (VECTOR_MODEL, compact_json(embedding_vector(text)), now, document_id),
     )
     bump_index_generation(db)
 
@@ -328,6 +334,9 @@ def _add_semantic_results(
     limit: int,
 ) -> list[dict[str, Any]]:
     existing = {row["id"] for row in rows}
+    semantic_rows = _sqlite_vec_semantic_results(db, query=query, domains=domains, existing=existing, limit=limit)
+    if semantic_rows:
+        return rows + semantic_rows[: max(0, limit - len(rows))]
     placeholders = ",".join("?" for _ in domains)
     candidates = db.query(
         f"""
@@ -358,6 +367,44 @@ def _add_semantic_results(
         semantic_rows.append(candidate)
     semantic_rows.sort(key=lambda row: row["score"], reverse=True)
     return rows + semantic_rows[: max(0, limit - len(rows))]
+
+
+def _sqlite_vec_semantic_results(
+    db: Database,
+    *,
+    query: str,
+    domains: list[str],
+    existing: set[str],
+    limit: int,
+) -> list[dict[str, Any]]:
+    nearest = query_similar_chunks(db, query, max(limit * 5, 10))
+    if not nearest:
+        return []
+    placeholders = ",".join("?" for _ in nearest)
+    domain_placeholders = ",".join("?" for _ in domains)
+    distances = {row["chunk_id"]: float(row["distance"]) for row in nearest}
+    rows = db.query(
+        f"""
+        SELECT d.id, d.domain, d.object_id, d.occurrence_id, d.title, d.canonical_text, d.metadata_json,
+               c.text AS matched_text, c.id AS chunk_id
+        FROM search_chunks c
+        JOIN search_documents d ON d.id = c.document_id
+        WHERE c.id IN ({placeholders})
+          AND d.deleted_at IS NULL
+          AND d.domain IN ({domain_placeholders})
+        """,
+        (*distances.keys(), *domains),
+    )
+    semantic_rows = []
+    for row in rows:
+        if row["id"] in existing:
+            continue
+        distance = distances.get(row["chunk_id"], 1.0)
+        row["score"] = max(0.0, 1.0 - distance)
+        row["why"] = ["sqlite_vec_match"]
+        semantic_rows.append(row)
+    semantic_rows.sort(key=lambda row: row["score"], reverse=True)
+    return semantic_rows
 
 
 def person_alias_terms(db: Database, person: str | None) -> list[str]:
@@ -750,6 +797,17 @@ def tombstone_mail_message(db: Database, message_id: str) -> None:
     bump_index_generation(db)
 
 
+def tombstone_mail_message_by_uid(db: Database, mailbox_id: str, uid: int) -> None:
+    """Mark a mail message deleted by IMAP mailbox UID."""
+
+    row = db.query_one(
+        "SELECT id FROM mail_messages WHERE mailbox_id = ? AND uid = ? AND deleted_at IS NULL",
+        (mailbox_id, uid),
+    )
+    if row:
+        tombstone_mail_message(db, row["id"])
+
+
 def get_calendar_object(db: Database, event_id: str) -> dict[str, Any] | None:
     """Return raw calendar object row."""
 
@@ -883,6 +941,10 @@ def update_calendar_event(
         return _update_single_occurrence(
             db, current, patch, etag_override=etag_override, raw_ics_override=raw_ics_override
         )
+    if scope == "future":
+        return _update_future_occurrences(
+            db, current, patch, etag_override=etag_override, raw_ics_override=raw_ics_override
+        )
     if scope not in {"series", "future"}:
         return {
             "status": "unsupported_scope",
@@ -945,6 +1007,115 @@ def update_calendar_event(
         "diff": sorted(patch.keys()),
         "scope": scope,
         "summary": {"title": title, "start": start, "end": end, "timezone": timezone},
+    }
+
+
+def _update_future_occurrences(
+    db: Database,
+    current: dict[str, Any],
+    patch: dict[str, Any],
+    *,
+    etag_override: str | None,
+    raw_ics_override: str | None,
+) -> dict[str, Any]:
+    cutoff = patch.get("occurrence_start") or patch.get("start") or current["dtstart"]
+    timezone = patch.get("timezone", current["timezone"])
+    cutoff_dt = _datetime_value(str(cutoff), timezone)
+    current_start = _datetime_value(current["dtstart"], current["timezone"])
+    current_end = _datetime_value(current["dtend"], current["timezone"])
+    duration = current_end - current_start
+    if duration <= timedelta(0):
+        duration = timedelta(hours=1)
+    if cutoff_dt <= current_start:
+        series_patch = {key: value for key, value in patch.items() if key not in {"occurrence_start", "recurrence_id"}}
+        return update_calendar_event(
+            db,
+            event_id=current["id"],
+            patch=series_patch,
+            etag=current["etag"],
+            scope="series",
+            etag_override=etag_override,
+            raw_ics_override=raw_ics_override,
+        )
+
+    original_recurrence = _stored_rrule_to_recurrence(current["rrule"]) or {}
+    until_dt = cutoff_dt.astimezone(UTC) - timedelta(seconds=1)
+    truncated_recurrence = {
+        key: value
+        for key, value in original_recurrence.items()
+        if key.casefold() not in {"count", "until"}
+    }
+    truncated_recurrence["until"] = until_dt.strftime("%Y%m%dT%H%M%SZ")
+    now = utc_now()
+    recurrence_for_ics = {**truncated_recurrence, "until": until_dt}
+    original_raw_ics = patch_ics(current["raw_ics"], {"recurrence": recurrence_for_ics}, current)
+    db.execute(
+        """
+        UPDATE calendar_objects
+        SET rrule = ?, raw_ics = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (compact_json(truncated_recurrence), original_raw_ics, now, current["id"]),
+    )
+    _replace_calendar_occurrences(
+        db,
+        event_id=current["id"],
+        dtstart=current["dtstart"],
+        dtend=current["dtend"],
+        timezone=current["timezone"],
+        rrule=compact_json(truncated_recurrence),
+        recurrence_id=current["recurrence_id"],
+        status=current["status"],
+        raw_ics=original_raw_ics,
+    )
+    index_calendar_event(db, current["id"])
+
+    future_start = patch.get("start") or cutoff_dt.isoformat()
+    future_end = patch.get("end") or (_datetime_value(str(future_start), timezone) + duration).isoformat()
+    future_title = patch.get("title", current["summary"])
+    future_recurrence = patch.get("recurrence", original_recurrence) or None
+    future_event_id = f"{current['id']}_future_{sha256_text(str(cutoff))[:12]}"
+    future_raw_ics = raw_ics_override or build_ics(
+        uid=current["uid"],
+        title=future_title,
+        start=future_start,
+        end=future_end,
+        timezone=timezone,
+        location=patch.get("location", current["location"]),
+        description=patch.get("description", current["description"]),
+        attendees=patch.get("attendees", parse_json(current["attendees_json"], [])),
+        recurrence=future_recurrence,
+        alarms=[],
+    )
+    upsert_calendar_object(
+        db,
+        calendar_id=current["calendar_id"],
+        event_id=future_event_id,
+        href=f"{current['href']}#future-{sha256_text(str(cutoff))[:12]}",
+        uid=current["uid"],
+        etag=etag_override or current["etag"],
+        raw_ics=future_raw_ics,
+        summary=future_title,
+        description=patch.get("description", current["description"]),
+        location=patch.get("location", current["location"]),
+        dtstart=future_start,
+        dtend=future_end,
+        timezone=timezone,
+        attendees=patch.get("attendees", parse_json(current["attendees_json"], [])),
+        organizer=parse_json(current["organizer_json"], {}),
+        rrule=compact_json(future_recurrence) if future_recurrence else None,
+        recurrence_id=None,
+        status=patch.get("status", current["status"]),
+    )
+    return {
+        "status": "updated",
+        "event_id": future_event_id,
+        "previous_event_id": current["id"],
+        "etag": etag_override or current["etag"],
+        "scope": "future",
+        "split_at": cutoff_dt.isoformat(),
+        "diff": sorted(patch.keys()),
+        "summary": {"title": future_title, "start": future_start, "end": future_end, "timezone": timezone},
     }
 
 
@@ -1302,7 +1473,13 @@ def list_mail(
     return {"messages": messages, "next_cursor": next_cursor(offset, len(messages), limit, cursor_secret)}
 
 
-def view_mail(db: Database, message_id: str, include: list[str], max_body_chars: int) -> dict[str, Any] | None:
+def view_mail(
+    db: Database,
+    message_id: str,
+    include: list[str],
+    max_body_chars: int,
+    body_offset: int = 0,
+) -> dict[str, Any] | None:
     """Return one mail message with optional compact body."""
 
     row = db.query_one("SELECT * FROM mail_messages WHERE id = ? AND deleted_at IS NULL", (message_id,))
@@ -1326,17 +1503,39 @@ def view_mail(db: Database, message_id: str, include: list[str], max_body_chars:
         }
     if "body_text" in include:
         body = row["body_text"] or ""
-        result["body_text"] = body[:max_body_chars]
-        result["body_truncated"] = len(body) > max_body_chars
+        safe_offset = max(0, min(body_offset, len(body)))
+        body_end = safe_offset + max_body_chars
+        result["body_text"] = body[safe_offset:body_end]
+        result["body_truncated"] = body_end < len(body)
         result["body_unavailable_reason"] = row.get("body_unavailable_reason")
+        next_offset = body_end if body_end < len(body) else None
         result["body_continuation"] = {
-            "available": len(body) > max_body_chars,
+            "available": next_offset is not None,
+            "offset": safe_offset,
+            "next_offset": next_offset,
+            "returned_chars": len(result["body_text"]),
+            "total_chars": len(body),
             "indexed_chars": row.get("body_indexed_chars") or 0,
         }
     if "attachments" in include:
         result["attachments"] = parse_json(row.get("attachments_json"), [])
     result["content_trust"] = "untrusted_user_data"
     return result
+
+
+def mailboxes_for_backfill(db: Database, limit: int) -> list[dict[str, Any]]:
+    """Return mailboxes with older mail backfill still pending."""
+
+    return db.query(
+        """
+        SELECT id, name, backfill_cursor, backfill_status
+        FROM mailboxes
+        WHERE COALESCE(backfill_status, 'not_started') != 'complete'
+        ORDER BY last_sync_at DESC, name ASC
+        LIMIT ?
+        """,
+        (limit,),
+    )
 
 
 def upsert_mailbox(

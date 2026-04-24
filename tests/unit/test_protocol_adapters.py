@@ -5,8 +5,13 @@ from email import message_from_bytes
 
 from icalendar import Calendar
 
-from icloud_mcp.adapters.caldav_calendar import _synced_event
-from icloud_mcp.adapters.carddav_contacts import _contact_from_vcard
+from icloud_mcp.adapters.caldav_calendar import CalDAVCalendarAdapter, _parse_sync_collection_response, _synced_event
+from icloud_mcp.adapters.carddav_contacts import (
+    _contact_from_vcard,
+)
+from icloud_mcp.adapters.carddav_contacts import (
+    _parse_sync_collection_response as _parse_carddav_sync_collection_response,
+)
 from icloud_mcp.adapters.imap_mail import _message_from_email
 from icloud_mcp.db.repositories import build_ics
 
@@ -133,6 +138,31 @@ END:VCARD
         self.assertIn("Liesa", aliases)
         self.assertIn("Project Sponsor", aliases)
 
+    def test_carddav_sync_collection_parser_extracts_changed_and_deleted_hrefs(self) -> None:
+        parsed = _parse_carddav_sync_collection_response(
+            """<?xml version="1.0" encoding="utf-8" ?>
+<d:multistatus xmlns:d="DAV:">
+  <d:sync-token>sync-token-2</d:sync-token>
+  <d:response>
+    <d:href>/carddav/contacts/1.vcf</d:href>
+    <d:propstat>
+      <d:prop><d:getetag>"etag-2"</d:getetag></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/carddav/contacts/old.vcf</d:href>
+    <d:status>HTTP/1.1 404 Not Found</d:status>
+  </d:response>
+</d:multistatus>
+"""
+        )
+
+        self.assertEqual(parsed.sync_token, "sync-token-2")
+        self.assertEqual(parsed.changed[0].href, "/carddav/contacts/1.vcf")
+        self.assertEqual(parsed.changed[0].etag, '"etag-2"')
+        self.assertEqual(parsed.deleted, ["/carddav/contacts/old.vcf"])
+
     def test_caldav_ics_parser_extracts_event_fields(self) -> None:
         event = type("Event", (), {"url": "https://caldav.icloud.com/e/1.ics", "etag": '"v1"'})()
         synced = _synced_event(
@@ -156,6 +186,58 @@ END:VCALENDAR
         self.assertEqual(synced.summary, "Project Sync with Liesa")
         self.assertEqual(synced.attendees, [{"email": "liesa@example.com", "name": "Liesa"}])
 
+    def test_caldav_sync_collection_parser_extracts_changed_and_deleted_hrefs(self) -> None:
+        parsed = _parse_sync_collection_response(
+            """<?xml version="1.0" encoding="utf-8" ?>
+<d:multistatus xmlns:d="DAV:">
+  <d:sync-token>sync-token-3</d:sync-token>
+  <d:response>
+    <d:href>/caldav/calendars/1.ics</d:href>
+    <d:propstat>
+      <d:prop><d:getetag>"event-etag"</d:getetag></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+  <d:response>
+    <d:href>/caldav/calendars/deleted.ics</d:href>
+    <d:status>HTTP/1.1 404 Not Found</d:status>
+  </d:response>
+</d:multistatus>
+"""
+        )
+
+        self.assertEqual(parsed.sync_token, "sync-token-3")
+        self.assertEqual(parsed.changed[0].href, "/caldav/calendars/1.ics")
+        self.assertEqual(parsed.changed[0].etag, '"event-etag"')
+        self.assertEqual(parsed.deleted, ["/caldav/calendars/deleted.ics"])
+
+    def test_caldav_update_event_sends_if_match_header(self) -> None:
+        raw_ics = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:event-1
+SUMMARY:Updated
+DTSTART:20260427T120000Z
+DTEND:20260427T130000Z
+END:VEVENT
+END:VCALENDAR
+"""
+        client = _FakeCalDAVClient()
+        adapter = _FakeCalDAVCalendarAdapter(client)
+
+        result = adapter.update_event(
+            apple_id="person@example.com",
+            app_password="app-password",
+            event_href="https://caldav.icloud.com/e/1.ics",
+            raw_ics=raw_ics,
+            expected_etag='"v1"',
+        )
+
+        self.assertEqual(result.uid, "event-1")
+        self.assertEqual(client.put_headers["If-Match"], '"v1"')
+        self.assertEqual(client.put_headers["Content-Type"], 'text/calendar; charset="utf-8"')
+        self.assertEqual(client.put_body, raw_ics)
+
     def test_build_ics_generates_parseable_calendar_data(self) -> None:
         raw_ics = build_ics(
             uid="event-1",
@@ -177,6 +259,48 @@ END:VCALENDAR
         self.assertEqual(str(event.get("UID")), "event-1")
         self.assertEqual(str(event.get("LOCATION")), "Berlin")
         self.assertEqual(str(event.get("ATTENDEE")), "mailto:liesa@example.com")
+
+
+class _FakeCalDAVCalendarAdapter(CalDAVCalendarAdapter):
+    def __init__(self, client: _FakeCalDAVClient) -> None:
+        super().__init__()
+        self.client = client
+
+    def _client(self, apple_id: str, app_password: str) -> _FakeCalDAVClient:
+        return self.client
+
+
+class _FakeCalDAVClient:
+    def __init__(self) -> None:
+        self.event = _FakeCalDAVEvent(self)
+        self.put_headers: dict[str, str] = {}
+        self.put_body = ""
+
+    def __enter__(self) -> _FakeCalDAVClient:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def event_by_url(self, event_href: str) -> _FakeCalDAVEvent:
+        return self.event
+
+    def put(self, url: str, body: str, headers: dict[str, str]) -> _FakeCalDAVResponse:
+        self.put_body = body
+        self.put_headers = headers
+        return _FakeCalDAVResponse()
+
+
+class _FakeCalDAVEvent:
+    def __init__(self, client: _FakeCalDAVClient) -> None:
+        self.client = client
+        self.url = "https://caldav.icloud.com/e/1.ics"
+        self.etag = '"v1"'
+        self.data = ""
+
+
+class _FakeCalDAVResponse:
+    status = 204
 
 
 if __name__ == "__main__":

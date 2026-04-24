@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
+from fastmcp.tools import ToolResult
+
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.services.search import SearchService
@@ -27,11 +29,11 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
         include_body_snippets: bool = True,
         freshness_policy: Literal["cache_only", "allow_stale", "refresh_if_stale"] = "allow_stale",
         cursor: str | None = None,
-    ) -> dict:
+    ) -> ToolResult:
         """Search local iCloud Mail, Calendar, and Contacts cache."""
 
         cursor_payload = decode_cursor(cursor, settings.cursor_secret)
-        return SearchService(db, settings).search(
+        result = SearchService(db, settings).search(
             query=query,
             domains=list(domains) if domains else None,
             start=start,
@@ -41,6 +43,11 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
             include_body_snippets=include_body_snippets,
             freshness_policy=freshness_policy,
             cursor_payload=cursor_payload,
+        )
+        return ToolResult(
+            content=result["content"],
+            structured_content={key: value for key, value in result.items() if key != "content"},
+            meta=result.get("meta", {}),
         )
 
     @mcp.tool(name="icloud.mail.search", annotations=READ_ANNOTATIONS)
@@ -53,7 +60,7 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
         freshness_policy: Literal["cache_only", "allow_stale", "refresh_if_stale"] = "allow_stale",
         limit: int = 10,
         cursor: str | None = None,
-    ) -> dict:
+    ) -> ToolResult:
         """Search only local Mail cache."""
 
         return await search(
@@ -77,7 +84,7 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
         freshness_policy: Literal["cache_only", "allow_stale", "refresh_if_stale"] = "allow_stale",
         limit: int = 10,
         cursor: str | None = None,
-    ) -> dict:
+    ) -> ToolResult:
         """Search only local Calendar cache."""
 
         return await search(

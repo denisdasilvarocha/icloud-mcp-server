@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urljoin
+from xml.sax.saxutils import escape
 
 import httpx
 import vobject
@@ -56,6 +57,23 @@ class SyncedContact:
     extra_aliases: list[tuple[str, str, float]] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class WebDAVSyncChange:
+    """Changed WebDAV member returned by sync-collection."""
+
+    href: str
+    etag: str | None
+
+
+@dataclass(frozen=True)
+class WebDAVSyncResult:
+    """Parsed WebDAV sync-collection result."""
+
+    sync_token: str | None
+    changed: list[WebDAVSyncChange]
+    deleted: list[str]
+
+
 class CardDAVContactsAdapter:
     """Read-only CardDAV client for iCloud Contacts."""
 
@@ -79,6 +97,30 @@ class CardDAVContactsAdapter:
             for addressbook in addressbooks:
                 contacts.extend(self._contacts(client, addressbook))
             return addressbooks, contacts
+
+    def discover_addressbooks(self, *, apple_id: str, app_password: str) -> list[SyncedAddressBook]:
+        """Discover CardDAV addressbooks without fetching all contacts."""
+
+        auth = (apple_id, app_password)
+        with httpx.Client(auth=auth, timeout=self.config.timeout_seconds, follow_redirects=True) as client:
+            principal_url = self._principal_url(client)
+            home_url = self._addressbook_home_url(client, principal_url)
+            return self._addressbooks(client, home_url)
+
+    def sync_contact_changes(
+        self,
+        *,
+        apple_id: str,
+        app_password: str,
+        addressbook: SyncedAddressBook,
+        sync_token: str,
+    ) -> tuple[WebDAVSyncResult, list[SyncedContact]]:
+        """Fetch changed/deleted contacts using WebDAV sync-collection."""
+
+        auth = (apple_id, app_password)
+        with httpx.Client(auth=auth, timeout=self.config.timeout_seconds, follow_redirects=True) as client:
+            result = _sync_collection(client, addressbook.url, sync_token)
+            return result, self._contacts_by_hrefs(client, addressbook, [change.href for change in result.changed])
 
     def _principal_url(self, client: httpx.Client) -> str:
         root = _propfind(
@@ -176,6 +218,41 @@ class CardDAVContactsAdapter:
             )
         return contacts
 
+    def _contacts_by_hrefs(
+        self,
+        client: httpx.Client,
+        addressbook: SyncedAddressBook,
+        hrefs: list[str],
+    ) -> list[SyncedContact]:
+        if not hrefs:
+            return []
+        href_xml = "\n".join(f"<d:href>{escape(href)}</d:href>" for href in hrefs)
+        root = _report(
+            client,
+            addressbook.url,
+            1,
+            f"""
+            <card:addressbook-multiget xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
+              <d:prop>
+                <d:getetag/>
+                <card:address-data/>
+              </d:prop>
+              {href_xml}
+            </card:addressbook-multiget>
+            """,
+        )
+        contacts = []
+        for response in root.findall("d:response", NS):
+            href = _text(response, "d:href")
+            raw_vcard = _text(response, ".//card:address-data")
+            if href and raw_vcard:
+                contacts.append(
+                    _contact_from_vcard(
+                        addressbook.id, urljoin(addressbook.url, href), raw_vcard, _text(response, ".//d:getetag")
+                    )
+                )
+        return contacts
+
 
 def _propfind(client: httpx.Client, url: str, depth: int, body: str) -> ElementTree.Element:
     return _dav_request(client, "PROPFIND", url, depth, body)
@@ -183,6 +260,43 @@ def _propfind(client: httpx.Client, url: str, depth: int, body: str) -> ElementT
 
 def _report(client: httpx.Client, url: str, depth: int, body: str) -> ElementTree.Element:
     return _dav_request(client, "REPORT", url, depth, body)
+
+
+def _sync_collection(client: httpx.Client, url: str, sync_token: str | None) -> WebDAVSyncResult:
+    root = _report(client, url, 1, _sync_collection_body(sync_token))
+    return _parse_sync_collection_root(root)
+
+
+def _sync_collection_body(sync_token: str | None) -> str:
+    token = escape(sync_token or "")
+    return f"""
+    <d:sync-collection xmlns:d="DAV:">
+      <d:sync-token>{token}</d:sync-token>
+      <d:sync-level>1</d:sync-level>
+      <d:prop>
+        <d:getetag/>
+      </d:prop>
+    </d:sync-collection>
+    """.strip()
+
+
+def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
+    return _parse_sync_collection_root(ElementTree.fromstring(xml_text))
+
+
+def _parse_sync_collection_root(root: ElementTree.Element) -> WebDAVSyncResult:
+    changed: list[WebDAVSyncChange] = []
+    deleted: list[str] = []
+    for response in root.findall("d:response", NS):
+        href = _text(response, "d:href")
+        if not href:
+            continue
+        status = _text(response, "d:status")
+        if status and " 404 " in f" {status} ":
+            deleted.append(href)
+            continue
+        changed.append(WebDAVSyncChange(href=href, etag=_text(response, ".//d:getetag")))
+    return WebDAVSyncResult(sync_token=_text(root, "d:sync-token"), changed=changed, deleted=deleted)
 
 
 def _dav_request(client: httpx.Client, method: str, url: str, depth: int, body: str) -> ElementTree.Element:

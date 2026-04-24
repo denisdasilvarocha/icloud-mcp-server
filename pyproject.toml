@@ -25,6 +25,7 @@ dependencies = [
   "keyring",
   "orjson",
   "tenacity",
+  "sqlite-vec>=0.1.9",
 ]
 
 [project.optional-dependencies]

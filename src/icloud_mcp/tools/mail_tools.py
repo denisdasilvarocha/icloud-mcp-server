@@ -42,6 +42,7 @@ def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
         message_id: str,
         include: list[str] | None = None,
         max_body_chars: int | None = None,
+        body_offset: int = 0,
     ) -> dict:
         """View one cached mail message."""
 
@@ -51,5 +52,6 @@ def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
             message_id=message_id,
             include=requested,
             max_body_chars=max(1, min(max_body_chars or settings.mail_body_view_chars, 20000)),
+            body_offset=max(0, body_offset),
         )
         return result or {"status": "not_found", "message_id": message_id}

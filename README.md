@@ -10,9 +10,9 @@ Implemented:
 
 - FastMCP tool registration for search, mail, contacts, calendar, and sync status.
 - Optional MCP resources for `mail://{message_id}`, `calendar://{event_id}`, and `contact://{contact_id}` plus an iCloud search prompt.
-- SQLite WAL schema with additive migrations for accounts, mail, calendar, contacts, aliases, chunks, FTS, durable local embeddings, cursors, idempotency, sync checkpoints, metrics, and audit events.
+- SQLite WAL schema with additive migrations for accounts, mail, calendar, contacts, aliases, chunks, FTS, `sqlite-vec` durable local embeddings, cursors, idempotency, sync checkpoints, metrics, and audit events.
 - IMAP parsing for Bcc, threading headers, attachments, text/calendar invites, encrypted-body status, and quote-suppressed search chunks.
-- Local hybrid search with query planning, relative date windows, alias expansion, chunk snippets, occurrence documents, freshness metadata, deterministic answer hints, and structured output fields.
+- Local hybrid search with query planning, relative date windows, alias expansion, chunk snippets, occurrence documents, `sqlite-vec` semantic retrieval, freshness metadata, deterministic answer hints, and structured output fields.
 - Calendar create/update guardrails with idempotency, ETag conflict handling, single/future/series scope handling, recurrence EXDATE/RDATE expansion, and ICS property preservation for patched fields.
 - CardDAV aliases for names, email local parts, nicknames, phonetic/relation fields, plus tombstone cleanup.
 - Sync status, local metrics, redaction, keychain credential fallback, and STDIO-only runtime configuration.
@@ -22,7 +22,7 @@ Partial:
 - IMAP, CalDAV, and CardDAV live adapters support real network sync and store sync metadata, but protocol-level QRESYNC/WebDAV `sync-collection` behavior still depends on what the underlying libraries expose.
 - Calendar remote writes preflight ETags and normalize connectivity/auth errors. Explicit `If-Match` transport headers need fake-server integration coverage before claiming full wire-level enforcement.
 - Attachment text/PDF extraction is disabled by default; attachment metadata is indexed and returned.
-- Vector search persists deterministic local sparse embeddings rather than requiring `sqlite-vec`.
+- Vector search uses `sqlite-vec` when the extension loads, with JSON sparse embeddings retained as a local fallback.
 
 Not implemented:
 

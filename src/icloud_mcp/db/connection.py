@@ -178,6 +178,14 @@ CREATE TABLE IF NOT EXISTS search_embeddings (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS vector_backend_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  backend TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  available INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
   document_id UNINDEXED,
   object_id UNINDEXED,

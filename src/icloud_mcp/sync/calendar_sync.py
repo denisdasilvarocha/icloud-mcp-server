@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from urllib.parse import urljoin
 
 from icloud_mcp.adapters.caldav_calendar import CalDAVCalendarAdapter
 from icloud_mcp.config import Settings
@@ -37,12 +38,19 @@ class CalendarSyncWorker:
         now_dt = datetime.now(tz=UTC)
         start = (now_dt - timedelta(days=31 * self.settings.calendar_past_months)).date()
         end = (now_dt + timedelta(days=31 * self.settings.calendar_future_months)).date()
-        calendars, events = adapter.sync_events(
-            apple_id=credentials.apple_id,
-            app_password=credentials.app_password,
-            start=start,
-            end=end,
-        )
+        if hasattr(adapter, "discover") and hasattr(adapter, "sync_event_changes"):
+            calendars, events, full_sync_calendar_ids, deleted_hrefs = self._sync_with_tokens(
+                adapter, credentials.apple_id, credentials.app_password, start, end
+            )
+        else:
+            calendars, events = adapter.sync_events(
+                apple_id=credentials.apple_id,
+                app_password=credentials.app_password,
+                start=start,
+                end=end,
+            )
+            full_sync_calendar_ids = {calendar.id for calendar in calendars}
+            deleted_hrefs = []
         now = utc_now()
         for calendar in calendars:
             upsert_calendar_collection(
@@ -78,9 +86,17 @@ class CalendarSyncWorker:
                 recurrence_id=event.recurrence_id,
                 status=event.status,
             )
+        for href in deleted_hrefs:
+            row = self.db.query_one(
+                "SELECT id FROM calendar_objects WHERE href = ? AND deleted_at IS NULL",
+                (href,),
+            )
+            if row:
+                tombstone_calendar_object(self.db, row["id"])
         synced_by_calendar: dict[str, set[str]] = {}
         for event in events:
-            synced_by_calendar.setdefault(event.calendar_id, set()).add(event.id)
+            if event.calendar_id in full_sync_calendar_ids:
+                synced_by_calendar.setdefault(event.calendar_id, set()).add(event.id)
         for calendar_id, synced_ids in synced_by_calendar.items():
             existing = self.db.query(
                 """
@@ -99,3 +115,68 @@ class CalendarSyncWorker:
         result = {"status": "ok", "calendars": len(calendars), "events": len(events)}
         update_checkpoint(self.db, self.name, "ok", result)
         return result
+
+    def _sync_with_tokens(
+        self,
+        adapter: CalDAVCalendarAdapter,
+        apple_id: str,
+        app_password: str,
+        start: date,
+        end: date,
+    ) -> tuple[list, list, set[str], list[str]]:
+        calendars = adapter.discover(apple_id=apple_id, app_password=app_password)
+        synced_calendars = []
+        events = []
+        deleted_hrefs: list[str] = []
+        full_sync_calendar_ids: set[str] = set()
+        fallback_needed = False
+        for calendar in calendars:
+            existing = self.db.query_one("SELECT sync_token, ctag FROM calendar_collections WHERE url = ?", (calendar.url,))
+            if existing and existing.get("sync_token") and calendar.sync_token:
+                try:
+                    result, changed = adapter.sync_event_changes(
+                        apple_id=apple_id,
+                        app_password=app_password,
+                        calendar_id=calendar.id,
+                        calendar_url=calendar.url,
+                        sync_token=existing["sync_token"],
+                    )
+                except Exception:
+                    synced_calendars.append(calendar)
+                    fallback_needed = True
+                    full_sync_calendar_ids.add(calendar.id)
+                    continue
+                events.extend(changed)
+                deleted_hrefs.extend([_absolute_member_url(calendar.url, href) for href in result.deleted])
+                if result.sync_token:
+                    synced_calendars.append(
+                        type(calendar)(
+                            id=calendar.id,
+                            url=calendar.url,
+                            display_name=calendar.display_name,
+                            color=calendar.color,
+                            read_only=calendar.read_only,
+                            sync_token=result.sync_token,
+                            ctag=calendar.ctag,
+                        )
+                    )
+                else:
+                    synced_calendars.append(calendar)
+                continue
+            synced_calendars.append(calendar)
+            if not existing or not calendar.ctag or existing.get("ctag") != calendar.ctag:
+                fallback_needed = True
+                full_sync_calendar_ids.add(calendar.id)
+        if fallback_needed:
+            _, full_events = adapter.sync_events(
+                apple_id=apple_id,
+                app_password=app_password,
+                start=start,
+                end=end,
+            )
+            events.extend(event for event in full_events if event.calendar_id in full_sync_calendar_ids)
+        return synced_calendars, events, full_sync_calendar_ids, deleted_hrefs
+
+
+def _absolute_member_url(collection_url: str, href: str) -> str:
+    return urljoin(collection_url, href)

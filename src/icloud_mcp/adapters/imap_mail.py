@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import email
 import hashlib
+from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
@@ -66,6 +67,23 @@ class SyncedMailMessage:
     body_unavailable_reason: str | None = None
 
 
+@dataclass(frozen=True)
+class DeletedMailMessage:
+    """Mailbox UID deleted or moved remotely."""
+
+    mailbox_id: str
+    uid: int
+
+
+@dataclass(frozen=True)
+class IMAPSyncDelta:
+    """Incremental IMAP sync result."""
+
+    mailboxes: list[SyncedMailbox]
+    messages: list[SyncedMailMessage]
+    deleted: list[DeletedMailMessage]
+
+
 class IMAPMailAdapter:
     """Read-only IMAP client for iCloud Mail."""
 
@@ -115,25 +133,100 @@ class IMAPMailAdapter:
                 )
                 if limit_per_mailbox > 0:
                     uids = sorted(uids)[-limit_per_mailbox:]
-                if not uids:
-                    continue
-                response = client.fetch(uids, ["RFC822", "FLAGS", "RFC822.SIZE", "INTERNALDATE"])
-                for uid, data in response.items():
-                    raw = data.get(b"RFC822")
-                    if not raw:
-                        continue
-                    parsed = email.message_from_bytes(raw)
-                    synced_messages.append(
-                        _message_from_email(
-                            mailbox_id=mailbox_id,
-                            uid=int(uid),
-                            message=parsed,
-                            flags=data.get(b"FLAGS", ()),
-                            size_bytes=int(data.get(b"RFC822.SIZE", 0) or 0),
-                            internal_date=data.get(b"INTERNALDATE"),
-                        )
-                    )
+                synced_messages.extend(_fetch_messages(client, mailbox_id, [int(uid) for uid in uids]))
         return synced_mailboxes, synced_messages
+
+    def sync_incremental(
+        self,
+        *,
+        apple_id: str,
+        app_password: str,
+        mailbox_states: dict[str, dict[str, Any]],
+        days: int,
+        limit_per_mailbox: int,
+    ) -> IMAPSyncDelta:
+        """Fetch new/changed messages and detect missing known UIDs."""
+
+        from imapclient import IMAPClient
+
+        synced_mailboxes: list[SyncedMailbox] = []
+        synced_messages: list[SyncedMailMessage] = []
+        deleted: list[DeletedMailMessage] = []
+        since = (datetime.now(tz=UTC) - timedelta(days=days)).date()
+
+        with IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True) as client:
+            client.login(apple_id, app_password)
+            folder_names = self._folder_names(client.list_folders())
+            for folder in folder_names:
+                select_info = _select_folder_condstore(client, folder)
+                mailbox_id = _mailbox_id(folder)
+                state = mailbox_states.get(mailbox_id, {})
+                uid_validity = _string_value(select_info.get(b"UIDVALIDITY"))
+                highest_modseq = _string_value(select_info.get(b"HIGHESTMODSEQ"))
+                if state.get("uid_validity") and state.get("uid_validity") != uid_validity:
+                    uids = [int(uid) for uid in client.search(["SINCE", since])]
+                    deleted.extend(DeletedMailMessage(mailbox_id=mailbox_id, uid=uid) for uid in state.get("known_uids", []))
+                else:
+                    uids = _incremental_uids(client, state)
+                    known_uids = {int(uid) for uid in state.get("known_uids", [])}
+                    if known_uids:
+                        remote_uids = {int(uid) for uid in client.search(["ALL"])}
+                        deleted.extend(
+                            DeletedMailMessage(mailbox_id=mailbox_id, uid=uid)
+                            for uid in sorted(known_uids - remote_uids)
+                        )
+                if limit_per_mailbox > 0:
+                    uids = sorted(set(uids))[-limit_per_mailbox:]
+                synced_messages.extend(_fetch_messages(client, mailbox_id, uids))
+                synced_mailboxes.append(
+                    SyncedMailbox(
+                        id=mailbox_id,
+                        name=folder,
+                        uid_validity=uid_validity,
+                        uid_next=_int_value(select_info.get(b"UIDNEXT")),
+                        highest_modseq=highest_modseq,
+                        last_synced_uid=max(uids + [int(state.get("last_synced_uid") or 0)], default=None),
+                        backfill_cursor=state.get("backfill_cursor"),
+                        backfill_status=state.get("backfill_status"),
+                    )
+                )
+        return IMAPSyncDelta(mailboxes=synced_mailboxes, messages=synced_messages, deleted=deleted)
+
+    def sync_backfill(
+        self,
+        *,
+        apple_id: str,
+        app_password: str,
+        mailbox: str,
+        cursor: str | None,
+        limit: int,
+    ) -> tuple[SyncedMailbox, list[SyncedMailMessage]]:
+        """Fetch one bounded batch of older messages for a mailbox."""
+
+        from imapclient import IMAPClient
+
+        with IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True) as client:
+            client.login(apple_id, app_password)
+            select_info = client.select_folder(mailbox, readonly=True)
+            mailbox_id = _mailbox_id(mailbox)
+            uids = _backfill_uids(client, cursor)
+            batch = sorted(uids)[-limit:] if limit > 0 else []
+            messages = _fetch_messages(client, mailbox_id, batch)
+            oldest_uid = min(batch) if batch else None
+            next_cursor = f"uid:{oldest_uid}" if oldest_uid and oldest_uid > 1 and len(batch) == limit else None
+            return (
+                SyncedMailbox(
+                    id=mailbox_id,
+                    name=mailbox,
+                    uid_validity=_string_value(select_info.get(b"UIDVALIDITY")),
+                    uid_next=_int_value(select_info.get(b"UIDNEXT")),
+                    highest_modseq=_string_value(select_info.get(b"HIGHESTMODSEQ")),
+                    last_synced_uid=max(batch, default=None),
+                    backfill_cursor=next_cursor,
+                    backfill_status="partial" if next_cursor else "complete",
+                ),
+                messages,
+            )
 
     def _folder_names(self, folders: list[tuple[Any, Any, str]]) -> list[str]:
         """Return folders worth syncing, with noisy folders delayed by ranking."""
@@ -146,6 +239,63 @@ class IMAPMailAdapter:
             if name not in preferred and not any(part in name.lower() for part in ["trash", "deleted", "junk", "spam"])
         ]
         return preferred + rest
+
+
+def _fetch_messages(client: Any, mailbox_id: str, uids: list[int]) -> list[SyncedMailMessage]:
+    if not uids:
+        return []
+    messages = []
+    response = client.fetch(uids, ["RFC822", "FLAGS", "RFC822.SIZE", "INTERNALDATE"])
+    for uid, data in response.items():
+        raw = data.get(b"RFC822")
+        if not raw:
+            continue
+        messages.append(
+            _message_from_email(
+                mailbox_id=mailbox_id,
+                uid=int(uid),
+                message=email.message_from_bytes(raw),
+                flags=data.get(b"FLAGS", ()),
+                size_bytes=int(data.get(b"RFC822.SIZE", 0) or 0),
+                internal_date=data.get(b"INTERNALDATE"),
+            )
+        )
+    return messages
+
+
+def _select_folder_condstore(client: Any, folder: str) -> dict[Any, Any]:
+    try:
+        return client.select_folder(folder, readonly=True, condstore=True)
+    except TypeError:
+        return client.select_folder(folder, readonly=True)
+
+
+def _incremental_uids(client: Any, state: dict[str, Any]) -> list[int]:
+    last_uid = int(state.get("last_synced_uid") or 0)
+    uid_query = ["UID", f"{last_uid + 1}:*"] if last_uid else ["ALL"]
+    uids = {int(uid) for uid in client.search(uid_query)}
+    highest_modseq = state.get("highest_modseq")
+    if highest_modseq:
+        with suppress(Exception):
+            uids.update(int(uid) for uid in client.search(["MODSEQ", str(highest_modseq)]))
+    return sorted(uids)
+
+
+def _backfill_uids(client: Any, cursor: str | None) -> list[int]:
+    if cursor and cursor.startswith("uid:"):
+        before_uid = max(1, int(cursor.removeprefix("uid:")) - 1)
+        return [int(uid) for uid in client.search(["UID", f"1:{before_uid}"])]
+    return [int(uid) for uid in client.search(["BEFORE", _cursor_before_date(cursor)])]
+
+
+def _cursor_before_date(cursor: str | None) -> date:
+    if cursor and ":" in cursor:
+        raw_date = cursor.split(":", 1)[0]
+        try:
+            return date.fromisoformat(raw_date)
+        except ValueError:
+            pass
+    return (datetime.now(tz=UTC) - timedelta(days=30)).date()
 
 
 def _message_from_email(

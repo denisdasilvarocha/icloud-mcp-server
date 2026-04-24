@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urljoin
 
 from icloud_mcp.adapters.carddav_contacts import CardDAVContactsAdapter
 from icloud_mcp.config import Settings
@@ -33,10 +34,17 @@ class ContactsSyncWorker:
             return result
 
         adapter = self.adapter or CardDAVContactsAdapter()
-        addressbooks, contacts = adapter.sync_contacts(
-            apple_id=credentials.apple_id,
-            app_password=credentials.app_password,
-        )
+        if hasattr(adapter, "discover_addressbooks") and hasattr(adapter, "sync_contact_changes"):
+            addressbooks, contacts, full_sync_books, deleted_hrefs = self._sync_with_tokens(
+                adapter, credentials.apple_id, credentials.app_password
+            )
+        else:
+            addressbooks, contacts = adapter.sync_contacts(
+                apple_id=credentials.apple_id,
+                app_password=credentials.app_password,
+            )
+            full_sync_books = {addressbook.id for addressbook in addressbooks}
+            deleted_hrefs = []
         now = utc_now()
         for addressbook in addressbooks:
             upsert_addressbook(
@@ -65,9 +73,14 @@ class ContactsSyncWorker:
                 notes=contact.notes,
                 extra_aliases=contact.extra_aliases,
             )
+        for href in deleted_hrefs:
+            row = self.db.query_one("SELECT id FROM contacts WHERE href = ? AND deleted_at IS NULL", (href,))
+            if row:
+                tombstone_contact(self.db, row["id"])
         synced_by_book: dict[str, set[str]] = {}
         for contact in contacts:
-            synced_by_book.setdefault(contact.addressbook_id, set()).add(contact.id)
+            if contact.addressbook_id in full_sync_books:
+                synced_by_book.setdefault(contact.addressbook_id, set()).add(contact.id)
         for addressbook_id, synced_ids in synced_by_book.items():
             existing = self.db.query(
                 "SELECT id FROM contacts WHERE addressbook_id = ? AND deleted_at IS NULL", (addressbook_id,)
@@ -78,3 +91,58 @@ class ContactsSyncWorker:
         result = {"status": "ok", "addressbooks": len(addressbooks), "contacts": len(contacts)}
         update_checkpoint(self.db, self.name, "ok", result)
         return result
+
+    def _sync_with_tokens(
+        self,
+        adapter: CardDAVContactsAdapter,
+        apple_id: str,
+        app_password: str,
+    ) -> tuple[list, list, set[str], list[str]]:
+        addressbooks = adapter.discover_addressbooks(apple_id=apple_id, app_password=app_password)
+        synced_addressbooks = []
+        contacts = []
+        deleted_hrefs: list[str] = []
+        full_sync_books: set[str] = set()
+        fallback_needed = False
+        for addressbook in addressbooks:
+            existing = self.db.query_one("SELECT sync_token, ctag FROM addressbooks WHERE url = ?", (addressbook.url,))
+            if existing and existing.get("sync_token") and addressbook.sync_token:
+                try:
+                    result, changed = adapter.sync_contact_changes(
+                        apple_id=apple_id,
+                        app_password=app_password,
+                        addressbook=addressbook,
+                        sync_token=existing["sync_token"],
+                    )
+                except Exception:
+                    synced_addressbooks.append(addressbook)
+                    fallback_needed = True
+                    full_sync_books.add(addressbook.id)
+                    continue
+                contacts.extend(changed)
+                deleted_hrefs.extend([_absolute_member_url(addressbook.url, href) for href in result.deleted])
+                if result.sync_token:
+                    synced_addressbooks.append(
+                        type(addressbook)(
+                            id=addressbook.id,
+                            url=addressbook.url,
+                            display_name=addressbook.display_name,
+                            sync_token=result.sync_token,
+                            ctag=addressbook.ctag,
+                        )
+                    )
+                else:
+                    synced_addressbooks.append(addressbook)
+                continue
+            synced_addressbooks.append(addressbook)
+            if not existing or not addressbook.ctag or existing.get("ctag") != addressbook.ctag:
+                fallback_needed = True
+                full_sync_books.add(addressbook.id)
+        if fallback_needed:
+            _, full_contacts = adapter.sync_contacts(apple_id=apple_id, app_password=app_password)
+            contacts.extend(contact for contact in full_contacts if contact.addressbook_id in full_sync_books)
+        return synced_addressbooks, contacts, full_sync_books, deleted_hrefs
+
+
+def _absolute_member_url(collection_url: str, href: str) -> str:
+    return urljoin(collection_url, href)

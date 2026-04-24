@@ -1,12 +1,16 @@
-"""Small local vector-style search using hashed bag-of-words embeddings."""
+"""Small local vector search using deterministic hashed embeddings."""
 
 from __future__ import annotations
 
 import math
 from collections import Counter
+from hashlib import blake2b
 from typing import Any
 
 from icloud_mcp.util import tokenize
+
+VECTOR_DIMENSIONS = 64
+VECTOR_MODEL = "sqlite-vec-local-hashed-v1"
 
 SYNONYMS = {
     "meeting": ["appointment", "sync", "catchup", "call"],
@@ -45,6 +49,21 @@ def embedding_vector(text: str) -> dict[str, int]:
     """Return deterministic sparse embedding values for durable local storage."""
 
     return dict(Counter(expanded_tokens(text)))
+
+
+def dense_embedding(text: str, dimensions: int = VECTOR_DIMENSIONS) -> list[float]:
+    """Return fixed-width dense vector for sqlite-vec storage."""
+
+    values = [0.0] * dimensions
+    for token, count in Counter(expanded_tokens(text)).items():
+        digest = blake2b(token.encode("utf-8"), digest_size=4).digest()
+        bucket = int.from_bytes(digest[:2], "big") % dimensions
+        sign = -1.0 if digest[2] % 2 else 1.0
+        values[bucket] += sign * float(count)
+    norm = math.sqrt(sum(value * value for value in values))
+    if norm == 0:
+        return values
+    return [value / norm for value in values]
 
 
 def cosine_score_vectors(query_vector: dict[str, Any], document_vector: dict[str, Any]) -> float:

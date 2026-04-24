@@ -15,13 +15,14 @@ from icloud_mcp.security.redaction import redact_text
 from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
 from icloud_mcp.sync.checkpoints import update_checkpoint
 from icloud_mcp.sync.contacts_sync import ContactsSyncWorker
-from icloud_mcp.sync.mail_sync import MailSyncWorker
+from icloud_mcp.sync.mail_sync import MailBackfillWorker, MailSyncWorker
 from icloud_mcp.util import compact_json
 
 LOGGER = logging.getLogger(__name__)
 
 WORKERS = [
     "mail_sync_worker",
+    "mail_backfill_worker",
     "calendar_sync_worker",
     "contacts_sync_worker",
     "indexer_worker",
@@ -72,6 +73,7 @@ class SyncScheduler:
             ContactsSyncWorker(self.db, self.settings),
             CalendarSyncWorker(self.db, self.settings),
             MailSyncWorker(self.db, self.settings),
+            MailBackfillWorker(self.db, self.settings),
         ]:
             started = time.perf_counter()
             try:

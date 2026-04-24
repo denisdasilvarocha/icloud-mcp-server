@@ -6,10 +6,16 @@ import hashlib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
+from urllib.parse import urljoin
+from xml.sax.saxutils import escape
 
+from defusedxml import ElementTree
 from icalendar import Calendar
 
 from icloud_mcp.db.repositories import build_ics
+
+DAV_NS = "DAV:"
+NS = {"d": DAV_NS}
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,23 @@ class CalendarWrite:
     uid: str
 
 
+@dataclass(frozen=True)
+class WebDAVSyncChange:
+    """Changed WebDAV member returned by sync-collection."""
+
+    href: str
+    etag: str | None
+
+
+@dataclass(frozen=True)
+class WebDAVSyncResult:
+    """Parsed WebDAV sync-collection result."""
+
+    sync_token: str | None
+    changed: list[WebDAVSyncChange]
+    deleted: list[str]
+
+
 class CalDAVCalendarAdapter:
     """Calendar read/write adapter using python-caldav."""
 
@@ -109,6 +132,30 @@ class CalDAVCalendarAdapter:
                         continue
                     events.append(_synced_event(calendar.id, event, data))
         return calendars, events
+
+    def sync_event_changes(
+        self,
+        *,
+        apple_id: str,
+        app_password: str,
+        calendar_id: str,
+        calendar_url: str,
+        sync_token: str,
+    ) -> tuple[WebDAVSyncResult, list[SyncedCalendarEvent]]:
+        """Fetch changed/deleted events using WebDAV sync-collection."""
+
+        events: list[SyncedCalendarEvent] = []
+        with self._client(apple_id, app_password) as client:
+            calendar_object = _calendar_by_url(client, calendar_url)
+            sync_client = getattr(calendar_object, "client", client)
+            result = _sync_collection(sync_client, calendar_url, sync_token)
+            for change in result.changed:
+                event_href = urljoin(calendar_url, change.href)
+                event = _event_by_url(client, event_href)
+                data = _event_data(event)
+                if data:
+                    events.append(_synced_event(calendar_id, event, data))
+        return result, events
 
     def create_event(
         self,
@@ -162,8 +209,7 @@ class CalDAVCalendarAdapter:
             current_etag = _etag(event)
             if expected_etag and current_etag and expected_etag != current_etag:
                 return {"status": "conflict", "latest_etag": current_etag}
-            event.data = raw_ics
-            event.save()
+            _save_event(event, raw_ics, expected_etag)
             return CalendarWrite(href=event_href, etag=_etag(event), raw_ics=raw_ics, uid=_uid_from_ics(raw_ics))
 
     def _client(self, apple_id: str, app_password: str) -> Any:
@@ -186,6 +232,52 @@ def _calendar_from_object(calendar: Any) -> SyncedCalendar:
         sync_token=_call_optional(calendar, "get_sync_token") or _optional_attr(calendar, "sync_token"),
         ctag=_call_optional(calendar, "get_ctag") or _optional_attr(calendar, "ctag"),
     )
+
+
+def _sync_collection(client: Any, url: str, sync_token: str | None) -> WebDAVSyncResult:
+    response = client.report(url, _sync_collection_body(sync_token), depth=1)
+    return _parse_sync_collection_response(_response_text(response))
+
+
+def _sync_collection_body(sync_token: str | None) -> str:
+    token = escape(sync_token or "")
+    return f"""
+    <d:sync-collection xmlns:d="DAV:">
+      <d:sync-token>{token}</d:sync-token>
+      <d:sync-level>1</d:sync-level>
+      <d:prop>
+        <d:getetag/>
+      </d:prop>
+    </d:sync-collection>
+    """.strip()
+
+
+def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
+    root = ElementTree.fromstring(xml_text)
+    changed: list[WebDAVSyncChange] = []
+    deleted: list[str] = []
+    for response in root.findall("d:response", NS):
+        href = _text(response, "d:href")
+        if not href:
+            continue
+        status = _text(response, "d:status")
+        if status and " 404 " in f" {status} ":
+            deleted.append(href)
+            continue
+        changed.append(WebDAVSyncChange(href=href, etag=_text(response, ".//d:getetag")))
+    return WebDAVSyncResult(sync_token=_text(root, "d:sync-token"), changed=changed, deleted=deleted)
+
+
+def _response_text(response: Any) -> str:
+    raw = getattr(response, "raw", None)
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        return raw
+    text = getattr(response, "text", None)
+    if isinstance(text, str):
+        return text
+    return str(response)
 
 
 def _synced_event(calendar_id: str, event: Any, raw_ics: str) -> SyncedCalendarEvent:
@@ -273,6 +365,35 @@ def _event_data(event: Any) -> str | None:
     return None
 
 
+def _save_event(event: Any, raw_ics: str, expected_etag: str | None) -> None:
+    event.data = raw_ics
+    if not expected_etag:
+        event.save()
+        return
+    client = getattr(event, "client", None)
+    url = getattr(event, "url", None)
+    if client is None or not url or not hasattr(client, "put"):
+        event.save()
+        return
+    response = client.put(
+        url,
+        raw_ics,
+        {"Content-Type": 'text/calendar; charset="utf-8"', "If-Match": expected_etag},
+    )
+    _raise_for_write_failure(response)
+
+
+def _raise_for_write_failure(response: Any) -> None:
+    status = getattr(response, "status", None) or getattr(response, "status_code", None)
+    if status in (200, 201, 204):
+        return
+    validate_status = getattr(response, "validate_status", None)
+    if callable(validate_status):
+        validate_status()
+        return
+    raise ValueError(f"CalDAV write failed with status {status}")
+
+
 def _etag(event: Any) -> str | None:
     if hasattr(event, "get_etag"):
         try:
@@ -331,3 +452,10 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, tuple):
         return list(value)
     return [value]
+
+
+def _text(element: ElementTree.Element, path: str) -> str | None:
+    found = element.find(path, NS)
+    if found is None or found.text is None:
+        return None
+    return found.text.strip()
