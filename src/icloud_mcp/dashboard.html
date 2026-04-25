@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>iCloud MCP Dashboard</title>
+  <style>
+    :root {
+      --canvas: #f3f0ee;
+      --ink: #141413;
+      --muted: #68615c;
+      --line: #ddd6d1;
+      --card: #fffaf6;
+      --orange: #f37338;
+      --good: #307f52;
+      --warn: #9b611d;
+      --bad: #a83c32;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+    .shell { max-width: 1240px; margin: 0 auto; padding: 24px 32px 48px; }
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 18px;
+      border-radius: 999px;
+      background: rgba(255, 250, 246, 0.82);
+      border: 1px solid rgba(20, 20, 19, 0.08);
+      position: sticky;
+      top: 20px;
+      backdrop-filter: blur(18px);
+      z-index: 10;
+    }
+    .brand { font-weight: 700; }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 14px;
+      color: var(--muted);
+      background: #fff7f1;
+      font-size: 13px;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+      gap: 24px;
+      margin: 40px 0 24px;
+      align-items: stretch;
+    }
+    h1 { margin: 0; font-size: clamp(40px, 7vw, 82px); line-height: 0.95; font-weight: 600; }
+    h2 { margin: 0 0 16px; font-size: 22px; font-weight: 650; }
+    .panel {
+      background: var(--card);
+      border: 1px solid rgba(20, 20, 19, 0.08);
+      border-radius: 40px;
+      padding: 28px;
+      box-shadow: 0 18px 60px rgba(20, 20, 19, 0.06);
+    }
+    .status-orbit {
+      min-height: 280px;
+      display: grid;
+      place-items: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .status-orbit:before {
+      content: "";
+      position: absolute;
+      width: 88%;
+      height: 70%;
+      border: 2px solid var(--orange);
+      border-color: var(--orange) transparent transparent var(--orange);
+      border-radius: 50%;
+      transform: rotate(-10deg);
+      opacity: 0.55;
+    }
+    .health {
+      width: 210px;
+      height: 210px;
+      border-radius: 50%;
+      background: var(--ink);
+      color: white;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 26px;
+      position: relative;
+      z-index: 1;
+    }
+    .health strong { display: block; font-size: 28px; text-transform: capitalize; }
+    .health span { display: block; margin-top: 10px; font-size: 13px; color: #ddd6d1; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 24px; }
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      background: var(--ink);
+      color: white;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    .ghost { background: white; color: var(--ink); border: 1px solid var(--line); }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 18px; }
+    .span-4 { grid-column: span 4; }
+    .span-6 { grid-column: span 6; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: span 12; }
+    .metric { display: flex; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+    .metric:last-child { border-bottom: 0; }
+    .label { color: var(--muted); font-size: 13px; }
+    .value { font-weight: 700; text-align: right; overflow-wrap: anywhere; }
+    .freshness { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .circle {
+      aspect-ratio: 1;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      background: #fff;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 18px;
+    }
+    .circle strong { text-transform: capitalize; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 13px 10px; border-bottom: 1px solid var(--line); text-align: left; font-size: 14px; vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+    .badge { display: inline-flex; border-radius: 999px; padding: 5px 10px; font-size: 12px; background: #eee6df; }
+    .ok { color: var(--good); }
+    .warn { color: var(--warn); }
+    .bad { color: var(--bad); }
+    @media (max-width: 860px) {
+      .shell { padding: 16px; }
+      .hero, .grid, .freshness { grid-template-columns: 1fr; }
+      .span-4, .span-6, .span-8, .span-12 { grid-column: span 1; }
+      .panel { border-radius: 28px; padding: 22px; }
+      .nav { top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <nav class="nav">
+      <div class="brand">iCloud MCP</div>
+      <div class="pill" id="updated">Loading</div>
+    </nav>
+    <section class="hero">
+      <div>
+        <h1>Dashboard</h1>
+        <div class="actions">
+          <button id="syncButton">Sync now</button>
+          <button class="ghost" id="refreshButton">Refresh</button>
+        </div>
+      </div>
+      <div class="panel status-orbit">
+        <div class="health">
+          <div>
+            <strong id="healthStatus">Loading</strong>
+            <span id="healthReason">Waiting for local status</span>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="grid">
+      <div class="panel span-8">
+        <h2>Freshness</h2>
+        <div class="freshness" id="freshness"></div>
+      </div>
+      <div class="panel span-4">
+        <h2>Sync</h2>
+        <div id="syncInfo"></div>
+      </div>
+      <div class="panel span-12">
+        <h2>Workers</h2>
+        <table>
+          <thead><tr><th>Name</th><th>Status</th><th>Last sync</th><th>Retries</th><th>Backoff</th><th>Progress</th></tr></thead>
+          <tbody id="workers"></tbody>
+        </table>
+      </div>
+      <div class="panel span-6">
+        <h2>Cache</h2>
+        <div id="counts"></div>
+      </div>
+      <div class="panel span-6">
+        <h2>Metrics</h2>
+        <div id="metrics"></div>
+      </div>
+      <div class="panel span-12">
+        <h2>Information</h2>
+        <div id="info"></div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const stateClass = (status) => status === "healthy" || status === "ok" || status === "idle" ? "ok" : status === "error" || status === "dead_letter" ? "bad" : "warn";
+    const text = (value, empty = "None") => value === null || value === undefined || value === "" ? empty : value;
+    const when = (value, empty = "Not scheduled") => value ? new Date(value).toLocaleString() : empty;
+    const row = (label, value, empty) => `<div class="metric"><span class="label">${label}</span><span class="value">${text(value, empty)}</span></div>`;
+    const age = (seconds) => seconds == null ? "Never synced" : `${Math.round(seconds / 60)} min ago`;
+
+    const dummyData = {
+      generated_at: new Date().toISOString(),
+      health: {
+        status: "healthy",
+        reason: "Local cache is within freshness threshold"
+      },
+      sync: {
+        freshness_status: {
+          mail: { status: "healthy", age_seconds: 420 },
+          calendar: { status: "syncing", age_seconds: 90 },
+          contacts: { status: "stale", age_seconds: 8200 }
+        },
+        workers: {
+          mail_sync_worker: {
+            status: "idle",
+            last_sync_at: "2026-04-25T08:58:00Z",
+            retry_count: 0,
+            backoff_until: null,
+            progress_cursor: "uid:88421"
+          },
+          calendar_sync_worker: {
+            status: "running",
+            last_sync_at: "2026-04-25T08:54:00Z",
+            retry_count: 0,
+            backoff_until: null,
+            progress_cursor: "page:3"
+          },
+          contacts_sync_worker: {
+            status: "error",
+            last_sync_at: "2026-04-25T06:22:00Z",
+            retry_count: 2,
+            backoff_until: "2026-04-25T09:20:00Z",
+            progress_cursor: "batch:12"
+          }
+        }
+      },
+      activity: {
+        live: true,
+        running_workers: ["calendar_sync_worker"],
+        attention_workers: ["contacts_sync_worker"]
+      },
+      scheduler: {
+        background_running: true,
+        next_run_at: "2026-04-25T09:15:00Z",
+        last_cycle_started_at: "2026-04-25T08:55:00Z",
+        last_cycle_finished_at: "2026-04-25T08:59:00Z"
+      },
+      manual_sync: {
+        running: false,
+        last_started_at: "2026-04-25T08:30:00Z",
+        last_finished_at: "2026-04-25T08:32:00Z"
+      },
+      counts: {
+        mail_messages: 18432,
+        calendar_events: 318,
+        contacts: 1248,
+        search_documents: 19998,
+        search_chunks: 84321,
+        pending_embeddings: 42,
+        query_cache: 156
+      },
+      metrics: {
+        totals: {
+          sync_cycles: 128,
+          imported_items: 4387,
+          failed_jobs: 2,
+          avg_query_ms: 38
+        }
+      },
+      info: {
+        version: "0.1.0-dev",
+        database_path: "~/.icloud-mcp/cache.db",
+        sync_interval_seconds: 900,
+        search_provider: "sqlite-vec",
+        workers: "omitted"
+      }
+    };
+
+    function loadStatus() {
+      const data = JSON.parse(JSON.stringify(dummyData));
+      data.generated_at = new Date().toISOString();
+      render(data);
+    }
+
+    function render(data) {
+      document.getElementById("updated").textContent = `Updated ${new Date(data.generated_at).toLocaleTimeString()}`;
+      document.getElementById("healthStatus").textContent = data.health.status.replace("_", " ");
+      document.getElementById("healthReason").textContent = data.health.reason;
+      document.getElementById("syncButton").disabled = Boolean(data.manual_sync.running);
+      document.getElementById("freshness").innerHTML = Object.entries(data.sync.freshness_status).map(([name, item]) => `
+        <div class="circle">
+          <div>
+            <div class="label">${name}</div>
+            <strong class="${stateClass(item.status)}">${item.status.replace("_", " ")}</strong>
+            <div class="label">${age(item.age_seconds)}</div>
+          </div>
+        </div>
+      `).join("");
+      document.getElementById("syncInfo").innerHTML = [
+        row("Live activity", data.activity.live ? "Active" : "Idle"),
+        row("Running workers", data.activity.running_workers.join(", "), "None"),
+        row("Needs attention", data.activity.attention_workers.join(", "), "None"),
+        row("Background", data.scheduler.background_running ? "Running" : "Stopped"),
+        row("Next automatic sync", when(data.scheduler.next_run_at)),
+        row("Last cycle started", when(data.scheduler.last_cycle_started_at, "No cycle yet")),
+        row("Last cycle finished", when(data.scheduler.last_cycle_finished_at, "No cycle yet")),
+        row("Manual sync", data.manual_sync.running ? "Running" : "Idle"),
+        row("Manual sync started", when(data.manual_sync.last_started_at, "Not started")),
+        row("Manual sync finished", when(data.manual_sync.last_finished_at, "Not finished"))
+      ].join("");
+      document.getElementById("workers").innerHTML = Object.entries(data.sync.workers).map(([name, worker]) => `
+        <tr>
+          <td>${name}</td>
+          <td><span class="badge ${stateClass(worker.status)}">${worker.status}</span></td>
+          <td>${when(worker.last_sync_at, "Never synced")}</td>
+          <td>${worker.retry_count || 0}</td>
+          <td>${when(worker.backoff_until, "None")}</td>
+          <td>${text(worker.progress_cursor, "None")}</td>
+        </tr>
+      `).join("");
+      document.getElementById("counts").innerHTML = Object.entries(data.counts).map(([name, value]) => row(name.replaceAll("_", " "), value)).join("");
+      document.getElementById("metrics").innerHTML = Object.entries(data.metrics.totals).map(([name, value]) => row(name, value)).join("") || row("metrics", "No metrics yet");
+      document.getElementById("info").innerHTML = Object.entries(data.info).filter(([key]) => key !== "workers").map(([key, value]) => row(key.replaceAll("_", " "), value)).join("");
+    }
+
+    document.getElementById("syncButton").addEventListener("click", () => {
+      document.getElementById("syncButton").disabled = true;
+      const data = JSON.parse(JSON.stringify(dummyData));
+      data.generated_at = new Date().toISOString();
+      data.manual_sync.running = true;
+      data.activity.live = true;
+      render(data);
+      setTimeout(loadStatus, 700);
+    });
+    document.getElementById("refreshButton").addEventListener("click", loadStatus);
+    loadStatus();
+    setInterval(loadStatus, 5000);
+  </script>
+</body>
+</html>

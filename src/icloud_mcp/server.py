@@ -4,23 +4,32 @@ from __future__ import annotations
 
 from icloud_mcp import __version__
 from icloud_mcp.config import Settings
+from icloud_mcp.dashboard import DashboardRuntime
 from icloud_mcp.db.connection import Database, open_db
 from icloud_mcp.db.repositories import ensure_defaults, view_contact, view_event, view_mail
 from icloud_mcp.sync.scheduler import SyncScheduler
 from icloud_mcp.tools.calendar_tools import register_calendar_tools
 from icloud_mcp.tools.contact_tools import register_contact_tools
+from icloud_mcp.tools.dashboard_tools import register_dashboard_tools
 from icloud_mcp.tools.mail_tools import register_mail_tools
 from icloud_mcp.tools.search_tools import register_search_tools
 from icloud_mcp.tools.sync_tools import register_sync_tools
 
 
-def create_server(settings: Settings | None = None, db: Database | None = None) -> object:
+def create_server(
+    settings: Settings | None = None,
+    db: Database | None = None,
+    scheduler: SyncScheduler | None = None,
+    dashboard: DashboardRuntime | None = None,
+) -> object:
     """Create and register the FastMCP server."""
 
     from fastmcp import FastMCP
 
     active_settings = settings or Settings.from_env()
     active_db = db or open_db(active_settings.database_path)
+    active_scheduler = scheduler or SyncScheduler(db=active_db, settings=active_settings)
+    active_dashboard = dashboard or DashboardRuntime(db=active_db, settings=active_settings, scheduler=active_scheduler)
     ensure_defaults(active_db, active_settings)
 
     mcp = FastMCP(
@@ -37,7 +46,8 @@ def create_server(settings: Settings | None = None, db: Database | None = None) 
     register_mail_tools(mcp, active_db, active_settings)
     register_contact_tools(mcp, active_db, active_settings)
     register_calendar_tools(mcp, active_db, active_settings)
-    register_sync_tools(mcp, active_db, active_settings)
+    register_sync_tools(mcp, active_db, active_settings, active_scheduler)
+    register_dashboard_tools(mcp, active_dashboard)
     register_resources_and_prompts(mcp, active_db, active_settings)
     return mcp
 
@@ -50,7 +60,8 @@ def main() -> None:
     ensure_defaults(db, settings)
     scheduler = SyncScheduler(db=db, settings=settings)
     scheduler.start_background()
-    mcp = create_server(settings=settings, db=db)
+    dashboard = DashboardRuntime(db=db, settings=settings, scheduler=scheduler)
+    mcp = create_server(settings=settings, db=db, scheduler=scheduler, dashboard=dashboard)
     mcp.run(transport="stdio")
 
 

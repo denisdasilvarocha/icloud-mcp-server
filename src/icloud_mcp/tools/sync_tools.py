@@ -12,7 +12,12 @@ from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
 SYNC_ANNOTATIONS = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
 
 
-def register_sync_tools(mcp: object, db: Database, settings: Settings) -> None:
+def register_sync_tools(
+    mcp: object,
+    db: Database,
+    settings: Settings,
+    scheduler: SyncScheduler | None = None,
+) -> None:
     """Register sync status tools."""
 
     @mcp.tool(name="icloud.sync.status", annotations=READ_ANNOTATIONS)
@@ -25,8 +30,8 @@ def register_sync_tools(mcp: object, db: Database, settings: Settings) -> None:
     async def sync_now_tool() -> dict:
         """Run one iCloud sync cycle using out-of-band credentials."""
 
-        scheduler = SyncScheduler(db=db, settings=settings)
-        return {"results": scheduler.sync_now(), "status": sync_status(db, settings.stale_after_seconds)}
+        active_scheduler = scheduler or SyncScheduler(db=db, settings=settings)
+        return {"results": active_scheduler.sync_now(), "status": sync_status(db, settings.stale_after_seconds)}
 
     @mcp.tool(name="icloud.metrics.snapshot", annotations=READ_ANNOTATIONS)
     async def metrics_snapshot_tool(limit: int = 100) -> dict:
