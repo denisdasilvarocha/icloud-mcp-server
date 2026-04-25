@@ -952,6 +952,52 @@ END:VCALENDAR
         self.assertEqual(_refresh_status("refresh_if_stale", {"mail": {"status": "fresh"}})["status"], "fresh")
         self.assertEqual(_refresh_status("refresh_if_stale", {"mail": {"status": "never_synced"}})["status"], "refresh_unavailable_inline")
 
+    def test_search_cache_hit_resigns_cursor_with_current_secret(self) -> None:
+        for index in range(2):
+            repo.upsert_search_document(
+                self.db,
+                document_id=f"doc_cached_cursor_{index}",
+                domain="mail",
+                object_id=f"mail_cached_cursor_{index}",
+                title=f"Cached cursor {index}",
+                text="cached cursor pagination",
+                metadata={"date": f"2026-04-24T0{index}:00:00+00:00"},
+            )
+
+        first = SearchService(
+            self.db,
+            Settings(database_path=":memory:", cursor_secret="old-secret", sync_on_start=False),
+        ).search(
+            query="cached cursor pagination",
+            domains=["mail"],
+            start=None,
+            end=None,
+            person=None,
+            limit=1,
+            include_body_snippets=True,
+            freshness_policy="allow_stale",
+            cursor_payload={"offset": 0},
+        )
+        self.assertEqual(decode_cursor(first["next_cursor"], "old-secret")["offset"], 1)
+
+        second = SearchService(
+            self.db,
+            Settings(database_path=":memory:", cursor_secret="new-secret", sync_on_start=False),
+        ).search(
+            query="cached cursor pagination",
+            domains=["mail"],
+            start=None,
+            end=None,
+            person=None,
+            limit=1,
+            include_body_snippets=True,
+            freshness_policy="allow_stale",
+            cursor_payload={"offset": 0},
+        )
+
+        self.assertEqual(second["meta"]["cache"], "hit")
+        self.assertEqual(decode_cursor(second["next_cursor"], "new-secret")["offset"], 1)
+
     def test_vector_backend_edges_and_audit(self) -> None:
         vector = importlib.import_module("icloud_mcp.indexing.vector")
         backend = importlib.import_module("icloud_mcp.indexing.vector_backend")

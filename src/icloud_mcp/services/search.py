@@ -73,6 +73,14 @@ class SearchService:
         if freshness_policy != "refresh_if_stale":
             cached = query_cache_get(self.db, cache_key, generation)
             if cached:
+                cached["next_cursor"] = next_cursor(
+                    offset,
+                    len(cached.get("results", [])),
+                    safe_limit,
+                    self.settings.cursor_secret,
+                    {"index_generation": generation},
+                    has_more=bool(cached.get("next_cursor")),
+                )
                 cached["meta"] = {**cached.get("meta", {}), "cache": "hit", "index_generation": generation}
                 return cached
 
