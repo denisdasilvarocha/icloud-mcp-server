@@ -15,10 +15,16 @@ from icloud_mcp.db.search_repository import cleanup_local_index
 from icloud_mcp.indexing.embeddings import EmbeddingWorker
 from icloud_mcp.observability.metrics import record_metric
 from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
-from icloud_mcp.sync.checkpoints import MAX_RETRIES, update_checkpoint, update_failure_checkpoint
+from icloud_mcp.sync.checkpoints import (
+    MAX_RETRIES,
+    initialize_checkpoints,
+    update_checkpoint,
+    update_failure_checkpoint,
+    update_worker_result_checkpoint,
+    update_worker_start_checkpoint,
+)
 from icloud_mcp.sync.contacts_sync import ContactsSyncWorker
 from icloud_mcp.sync.mail_sync import MailBackfillWorker, MailSyncWorker
-from icloud_mcp.util import compact_json
 
 LOGGER = logging.getLogger(__name__)
 WORKERS = [
@@ -50,15 +56,7 @@ class SyncScheduler:
     def initialize_checkpoints(self) -> None:
         """Ensure all known sync workers have dashboard-visible checkpoints."""
 
-        for worker in WORKERS:
-            self.db.execute(
-                """
-                INSERT INTO sync_checkpoints (name, status, last_sync_at, detail_json, retry_count)
-                VALUES (?, 'idle', NULL, ?, 0)
-                ON CONFLICT(name) DO NOTHING
-                """,
-                (worker, compact_json({"mode": "ready"})),
-            )
+        initialize_checkpoints(self.db, WORKERS)
 
     def start_background(self) -> None:
         """Initialize checkpoints and start sync loop when enabled."""
@@ -180,12 +178,9 @@ class SyncScheduler:
 
             started = time.perf_counter()
             try:
-                update_checkpoint(self.db, name, "running", {"mode": "manual_or_background"})
+                update_worker_start_checkpoint(self.db, name)
                 result = worker.run_once()
-                if result.get("status") not in {"error", "dead_letter", "backoff"}:
-                    result["retry_count"] = 0
-                checkpoint_status = _checkpoint_status(result.get("status"))
-                update_checkpoint(self.db, name, checkpoint_status, result)
+                update_worker_result_checkpoint(self.db, name, result)
                 record_metric(self.db, "sync.duration_ms", (time.perf_counter() - started) * 1000, {"worker": name})
                 return result
             except Exception as exc:
@@ -220,8 +215,3 @@ def _in_backoff(value: str | None) -> bool:
     except ValueError:
         return False
 
-
-def _checkpoint_status(status: object) -> str:
-    if status in {"skipped", "error", "dead_letter", "backoff"}:
-        return str(status)
-    return "ok"

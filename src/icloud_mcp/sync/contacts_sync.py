@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urljoin
 
 from icloud_mcp.adapters.carddav_contacts import CardDAVContactsAdapter
@@ -12,6 +12,7 @@ from icloud_mcp.db.contacts_repository import tombstone_contact, upsert_addressb
 from icloud_mcp.security.secrets import load_icloud_credentials
 from icloud_mcp.sync.capabilities import ContactsDeltaAdapter, supports_contacts_delta
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
+from icloud_mcp.sync.delta import sync_delta_first
 from icloud_mcp.util import utc_now
 
 
@@ -108,51 +109,22 @@ class ContactsSyncWorker:
         app_password: str,
     ) -> tuple[list, list, set[str], list[str]]:
         addressbooks = adapter.discover_addressbooks(apple_id=apple_id, app_password=app_password)
-        synced_addressbooks = []
-        contacts = []
-        deleted_hrefs: list[str] = []
-        full_sync_books: set[str] = set()
-        fallback_needed = False
-        for addressbook in addressbooks:
-            existing = self.db.query_one("SELECT sync_token, ctag FROM addressbooks WHERE url = ?", (addressbook.url,))
-            if existing and existing.get("sync_token") and addressbook.sync_token:
-                try:
-                    result, changed = adapter.sync_contact_changes(
-                        apple_id=apple_id,
-                        app_password=app_password,
-                        addressbook=addressbook,
-                        sync_token=existing["sync_token"],
-                    )
-                except Exception:
-                    synced_addressbooks.append(addressbook)
-                    fallback_needed = True
-                    full_sync_books.add(addressbook.id)
-                    continue
-                contacts.extend(changed)
-                deleted_hrefs.extend([_absolute_member_url(addressbook.url, href) for href in result.deleted])
-                if not result.sync_token:
-                    fallback_needed = True
-                    full_sync_books.add(addressbook.id)
-                    synced_addressbooks.append(addressbook)
-                    continue
-                synced_addressbooks.append(
-                    type(addressbook)(
-                        id=addressbook.id,
-                        url=addressbook.url,
-                        display_name=addressbook.display_name,
-                        sync_token=result.sync_token,
-                        ctag=addressbook.ctag,
-                    )
-                )
-                continue
-            synced_addressbooks.append(addressbook)
-            if not existing or not addressbook.ctag or existing.get("ctag") != addressbook.ctag:
-                fallback_needed = True
-                full_sync_books.add(addressbook.id)
-        if fallback_needed:
-            _, full_contacts = adapter.sync_contacts(apple_id=apple_id, app_password=app_password)
-            contacts.extend(contact for contact in full_contacts if contact.addressbook_id in full_sync_books)
-        return synced_addressbooks, contacts, full_sync_books, deleted_hrefs
+        result = sync_delta_first(
+            db=self.db,
+            collections=addressbooks,
+            existing_sql="SELECT sync_token, ctag FROM addressbooks WHERE url = ?",
+            sync_changes=lambda addressbook, sync_token: adapter.sync_contact_changes(
+                apple_id=apple_id,
+                app_password=app_password,
+                addressbook=addressbook,
+                sync_token=sync_token,
+            ),
+            full_sync_items=lambda: adapter.sync_contacts(apple_id=apple_id, app_password=app_password)[1],
+            item_collection_id=lambda contact: contact.addressbook_id,
+            deleted_href=lambda addressbook, href: _absolute_member_url(addressbook.url, href),
+            collection_with_sync_token=lambda addressbook, sync_token: replace(addressbook, sync_token=sync_token),
+        )
+        return result.collections, result.items, result.full_sync_collection_ids, result.deleted_hrefs
 
 
 def _absolute_member_url(collection_url: str, href: str) -> str:

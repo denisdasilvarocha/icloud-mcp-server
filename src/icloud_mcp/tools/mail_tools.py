@@ -10,7 +10,7 @@ from pydantic import Field
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.db.mail_repository import list_mail, view_mail
-from icloud_mcp.tools.boundary import bounded_int, cursor_offset, decode_cursor_or_error, minimum_int, not_found
+from icloud_mcp.tools.boundary import bounded_int, cursor_offset, cursor_state_or_error, minimum_int, not_found
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
 
 
@@ -28,7 +28,7 @@ def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
     ) -> dict:
         """List compact mail rows from local cache."""
 
-        cursor_payload, error = decode_cursor_or_error(cursor, settings.cursor_secret)
+        cursor_payload, error = cursor_state_or_error(cursor, settings.cursor_secret)
         if error:
             return error
         return list_mail(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urldefrag, urljoin
 
@@ -17,6 +17,7 @@ from icloud_mcp.db.connection import Database
 from icloud_mcp.security.secrets import load_icloud_credentials
 from icloud_mcp.sync.capabilities import CalendarDeltaAdapter, supports_calendar_delta
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
+from icloud_mcp.sync.delta import sync_delta_first
 from icloud_mcp.util import utc_now
 
 
@@ -143,59 +144,28 @@ class CalendarSyncWorker:
         end: date,
     ) -> tuple[list, list, set[str], list[str]]:
         calendars = adapter.discover(apple_id=apple_id, app_password=app_password)
-        synced_calendars = []
-        events = []
-        deleted_hrefs: list[str] = []
-        full_sync_calendar_ids: set[str] = set()
-        fallback_needed = False
-        for calendar in calendars:
-            existing = self.db.query_one("SELECT sync_token, ctag FROM calendar_collections WHERE url = ?", (calendar.url,))
-            if existing and existing.get("sync_token") and calendar.sync_token:
-                try:
-                    result, changed = adapter.sync_event_changes(
-                        apple_id=apple_id,
-                        app_password=app_password,
-                        calendar_id=calendar.id,
-                        calendar_url=calendar.url,
-                        sync_token=existing["sync_token"],
-                    )
-                except Exception:
-                    synced_calendars.append(calendar)
-                    fallback_needed = True
-                    full_sync_calendar_ids.add(calendar.id)
-                    continue
-                events.extend(changed)
-                deleted_hrefs.extend([_absolute_member_url(calendar.url, href) for href in result.deleted])
-                if not result.sync_token:
-                    fallback_needed = True
-                    full_sync_calendar_ids.add(calendar.id)
-                    synced_calendars.append(calendar)
-                    continue
-                synced_calendars.append(
-                    type(calendar)(
-                        id=calendar.id,
-                        url=calendar.url,
-                        display_name=calendar.display_name,
-                        color=calendar.color,
-                        read_only=calendar.read_only,
-                        sync_token=result.sync_token,
-                        ctag=calendar.ctag,
-                    )
-                )
-                continue
-            synced_calendars.append(calendar)
-            if not existing or not calendar.ctag or existing.get("ctag") != calendar.ctag:
-                fallback_needed = True
-                full_sync_calendar_ids.add(calendar.id)
-        if fallback_needed:
-            _, full_events = adapter.sync_events(
+        result = sync_delta_first(
+            db=self.db,
+            collections=calendars,
+            existing_sql="SELECT sync_token, ctag FROM calendar_collections WHERE url = ?",
+            sync_changes=lambda calendar, sync_token: adapter.sync_event_changes(
+                apple_id=apple_id,
+                app_password=app_password,
+                calendar_id=calendar.id,
+                calendar_url=calendar.url,
+                sync_token=sync_token,
+            ),
+            full_sync_items=lambda: adapter.sync_events(
                 apple_id=apple_id,
                 app_password=app_password,
                 start=start,
                 end=end,
-            )
-            events.extend(event for event in full_events if event.calendar_id in full_sync_calendar_ids)
-        return synced_calendars, events, full_sync_calendar_ids, deleted_hrefs
+            )[1],
+            item_collection_id=lambda event: event.calendar_id,
+            deleted_href=lambda calendar, href: _absolute_member_url(calendar.url, href),
+            collection_with_sync_token=lambda calendar, sync_token: replace(calendar, sync_token=sync_token),
+        )
+        return result.collections, result.items, result.full_sync_collection_ids, result.deleted_hrefs
 
 
 def _absolute_member_url(collection_url: str, href: str) -> str:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from fastmcp.tools import ToolResult
+
 from icloud_mcp.util import cursor_error, decode_cursor
 
 
@@ -34,7 +36,30 @@ def cursor_offset(payload: dict[str, Any] | None) -> int:
     return int((payload or {}).get("offset", 0))
 
 
+def cursor_state_or_error(cursor: str | None, secret: str) -> tuple[dict[str, Any], dict[str, str] | None]:
+    """Return a decoded cursor state with a stable offset default."""
+
+    payload, error = decode_cursor_or_error(cursor, secret)
+    return payload or {"offset": 0}, error
+
+
 def not_found(identifier: str, value: str) -> dict[str, str]:
     """Return a deterministic not-found envelope."""
 
     return {"status": "not_found", identifier: value}
+
+
+def search_tool_result(result: dict[str, Any]) -> ToolResult:
+    """Map search service payloads to the FastMCP transport envelope."""
+
+    return ToolResult(
+        content=result["content"],
+        structured_content={key: value for key, value in result.items() if key != "content"},
+        meta=result.get("meta", {}),
+    )
+
+
+def tool_error_result(error: dict[str, str]) -> ToolResult:
+    """Map public tool errors to the FastMCP transport envelope."""
+
+    return ToolResult(content="", structured_content=error, meta=error)

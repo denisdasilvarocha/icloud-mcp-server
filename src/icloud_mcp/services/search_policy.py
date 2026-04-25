@@ -107,18 +107,23 @@ def _cache_key(
     include_body_snippets: bool,
     cursor_payload: dict[str, Any],
 ) -> str:
+    cursor_offset = int(cursor_payload.get("offset", 0))
     return sha256_text(
         compact_json(
             {
+                "version": 1,
                 "query": policy.query,
+                "normalized_query": policy.normalized_query,
                 "domains": policy.selected_domains,
                 "start": policy.effective_start,
                 "end": policy.effective_end,
                 "person": person,
+                "person_filter": policy.person_filter,
                 "limit": policy.safe_limit,
                 "include_body_snippets": include_body_snippets,
-                "cursor": cursor_payload,
-                "plan": policy.plan.__dict__,
+                "cursor_offset": cursor_offset,
+                "intent": policy.plan.intent,
+                "planned_people": policy.planned_people,
             }
         )
     )

@@ -13,7 +13,7 @@ from icloud_mcp.db.calendar_repository import (
 from icloud_mcp.db.connection import Database
 from icloud_mcp.schemas.calendar import CreateEventInput, UpdateEventInput
 from icloud_mcp.services import calendar_write as calendar_write_service
-from icloud_mcp.tools.boundary import bounded_int, cursor_offset, decode_cursor_or_error, not_found
+from icloud_mcp.tools.boundary import bounded_int, cursor_offset, cursor_state_or_error, not_found
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
 
 WRITE_ANNOTATIONS = {
@@ -43,7 +43,7 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
     ) -> dict:
         """List cached calendar events by time range."""
 
-        cursor_payload, error = decode_cursor_or_error(cursor, settings.cursor_secret)
+        cursor_payload, error = cursor_state_or_error(cursor, settings.cursor_secret)
         if error:
             return error
         return list_events(

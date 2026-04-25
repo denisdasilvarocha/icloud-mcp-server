@@ -332,6 +332,91 @@ DASHBOARD_HTML = r"""<html lang="en"><head>
 
 
 @dataclass
+class DashboardSnapshotPresenter:
+    """Shape dashboard snapshot data for HTTP and MCP status consumers."""
+
+    settings: Settings
+    version: str = __version__
+
+    def snapshot(
+        self,
+        *,
+        generated_at: str,
+        status: dict[str, Any],
+        scheduler_status: dict[str, Any],
+        manual_sync: dict[str, Any],
+        metrics: dict[str, Any],
+        counts: dict[str, int],
+    ) -> dict[str, Any]:
+        """Build the dashboard operational snapshot from collected local state."""
+
+        workers = status.get("workers", {})
+        return {
+            "generated_at": generated_at,
+            "health": self.health(status),
+            "activity": self.activity(status, scheduler_status, manual_sync),
+            "sync": status,
+            "scheduler": scheduler_status,
+            "manual_sync": manual_sync,
+            "metrics": metrics,
+            "counts": counts,
+            "info": {
+                "version": self.version,
+                "database_path": str(self.settings.database_path),
+                "sync_on_start": self.settings.sync_on_start,
+                "sync_interval_seconds": self.settings.sync_interval_seconds,
+                "stale_after_seconds": self.settings.stale_after_seconds,
+                "mail_sync_days": self.settings.mail_sync_days,
+                "mail_sync_limit_per_mailbox": self.settings.mail_sync_limit_per_mailbox,
+                "calendar_past_months": self.settings.calendar_past_months,
+                "calendar_future_months": self.settings.calendar_future_months,
+                "query_cache_ttl_seconds": self.settings.query_cache_ttl_seconds,
+                "attachment_text_indexing": self.settings.attachment_text_indexing,
+                "workers": list(workers),
+            },
+        }
+
+    @staticmethod
+    def health(status: dict[str, Any]) -> dict[str, str]:
+        freshness = status.get("freshness_status", {})
+        domain_states = [str(value.get("status")) for value in freshness.values() if isinstance(value, dict)]
+        workers = status.get("workers", {})
+        worker_states = [str(value.get("status")) for value in workers.values() if isinstance(value, dict)]
+        if any(state in {"error", "dead_letter", "backoff"} for state in worker_states):
+            return {"status": "degraded", "reason": "one or more sync workers need attention"}
+        if any(state == "never_synced" for state in domain_states):
+            return {"status": "not_synced", "reason": "one or more domains have not synced yet"}
+        if any(state == "stale" for state in domain_states):
+            return {"status": "degraded", "reason": "one or more domains are stale"}
+        if any(state == "running" for state in worker_states):
+            return {"status": "syncing", "reason": "sync workers are running"}
+        return {"status": "healthy", "reason": "local cache is within freshness threshold"}
+
+    @staticmethod
+    def activity(
+        status: dict[str, Any], scheduler_status: dict[str, Any], manual_sync: dict[str, Any]
+    ) -> dict[str, Any]:
+        workers = status.get("workers", {})
+        running_workers = sorted(
+            name for name, worker in workers.items() if isinstance(worker, dict) and worker.get("status") == "running"
+        )
+        attention_workers = sorted(
+            name
+            for name, worker in workers.items()
+            if isinstance(worker, dict) and worker.get("status") in {"error", "dead_letter", "backoff"}
+        )
+        return {
+            "live": bool(running_workers or manual_sync.get("running")),
+            "running_workers": running_workers,
+            "attention_workers": attention_workers,
+            "next_run_at": scheduler_status.get("next_run_at"),
+            "last_cycle_started_at": scheduler_status.get("last_cycle_started_at"),
+            "last_cycle_finished_at": scheduler_status.get("last_cycle_finished_at"),
+            "manual_sync_running": bool(manual_sync.get("running")),
+        }
+
+
+@dataclass
 class DashboardRuntime:
     """Own one localhost dashboard server per MCP process."""
 
@@ -395,33 +480,16 @@ class DashboardRuntime:
 
         self._initialize_worker_status()
         status = sync_status(self.db, self.settings.stale_after_seconds)
-        workers = status.get("workers", {})
         scheduler_status = self.scheduler.status()
         manual_sync = self._manual_sync_snapshot()
-        return {
-            "generated_at": utc_now(),
-            "health": _health(status),
-            "activity": _activity(status, scheduler_status, manual_sync),
-            "sync": status,
-            "scheduler": scheduler_status,
-            "manual_sync": manual_sync,
-            "metrics": metrics_snapshot(self.db, limit=50),
-            "counts": _counts(self.db),
-            "info": {
-                "version": __version__,
-                "database_path": str(self.settings.database_path),
-                "sync_on_start": self.settings.sync_on_start,
-                "sync_interval_seconds": self.settings.sync_interval_seconds,
-                "stale_after_seconds": self.settings.stale_after_seconds,
-                "mail_sync_days": self.settings.mail_sync_days,
-                "mail_sync_limit_per_mailbox": self.settings.mail_sync_limit_per_mailbox,
-                "calendar_past_months": self.settings.calendar_past_months,
-                "calendar_future_months": self.settings.calendar_future_months,
-                "query_cache_ttl_seconds": self.settings.query_cache_ttl_seconds,
-                "attachment_text_indexing": self.settings.attachment_text_indexing,
-                "workers": list(workers),
-            },
-        }
+        return DashboardSnapshotPresenter(self.settings).snapshot(
+            generated_at=utc_now(),
+            status=status,
+            scheduler_status=scheduler_status,
+            manual_sync=manual_sync,
+            metrics=metrics_snapshot(self.db, limit=50),
+            counts=_counts(self.db),
+        )
 
     def sync_now_background(self) -> dict[str, Any]:
         """Start a manual sync in a background thread."""
@@ -474,40 +542,11 @@ class DashboardRuntime:
 
 
 def _health(status: dict[str, Any]) -> dict[str, str]:
-    freshness = status.get("freshness_status", {})
-    domain_states = [str(value.get("status")) for value in freshness.values() if isinstance(value, dict)]
-    workers = status.get("workers", {})
-    worker_states = [str(value.get("status")) for value in workers.values() if isinstance(value, dict)]
-    if any(state in {"error", "dead_letter", "backoff"} for state in worker_states):
-        return {"status": "degraded", "reason": "one or more sync workers need attention"}
-    if any(state == "never_synced" for state in domain_states):
-        return {"status": "not_synced", "reason": "one or more domains have not synced yet"}
-    if any(state == "stale" for state in domain_states):
-        return {"status": "degraded", "reason": "one or more domains are stale"}
-    if any(state == "running" for state in worker_states):
-        return {"status": "syncing", "reason": "sync workers are running"}
-    return {"status": "healthy", "reason": "local cache is within freshness threshold"}
+    return DashboardSnapshotPresenter.health(status)
 
 
 def _activity(status: dict[str, Any], scheduler_status: dict[str, Any], manual_sync: dict[str, Any]) -> dict[str, Any]:
-    workers = status.get("workers", {})
-    running_workers = sorted(
-        name for name, worker in workers.items() if isinstance(worker, dict) and worker.get("status") == "running"
-    )
-    attention_workers = sorted(
-        name
-        for name, worker in workers.items()
-        if isinstance(worker, dict) and worker.get("status") in {"error", "dead_letter", "backoff"}
-    )
-    return {
-        "live": bool(running_workers or manual_sync.get("running")),
-        "running_workers": running_workers,
-        "attention_workers": attention_workers,
-        "next_run_at": scheduler_status.get("next_run_at"),
-        "last_cycle_started_at": scheduler_status.get("last_cycle_started_at"),
-        "last_cycle_finished_at": scheduler_status.get("last_cycle_finished_at"),
-        "manual_sync_running": bool(manual_sync.get("running")),
-    }
+    return DashboardSnapshotPresenter.activity(status, scheduler_status, manual_sync)
 
 
 def _counts(db: Database) -> dict[str, int]:

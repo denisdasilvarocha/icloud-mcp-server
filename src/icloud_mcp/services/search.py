@@ -9,10 +9,11 @@ from icloud_mcp.config import Settings
 from icloud_mcp.db.cache_state import freshness, freshness_status, index_generation
 from icloud_mcp.db.connection import Database
 from icloud_mcp.db.search_repository import (
+    SearchIndexQuery,
     person_alias_terms,
     query_cache_get,
     query_cache_set,
-    search_documents,
+    search_index,
 )
 from icloud_mcp.services.search_policy import _external_domains, _refresh_status, resolve_search_policy
 from icloud_mcp.util import next_cursor, tokenize
@@ -142,6 +143,35 @@ def answer_hints(query: str, results: list[dict[str, Any]], intent: str = "gener
     if len(results) > 1 and abs(float(results[0].get("score", 0.0)) - float(results[1].get("score", 0.0))) < 0.05:
         return [{"type": "ambiguous_candidates", "source_ids": [row["id"] for row in results[:3]]}]
     return []
+
+
+def search_documents(
+    db: Database,
+    *,
+    query: str,
+    domains: list[str],
+    limit: int,
+    offset: int,
+    snippet_chars: int,
+    start: str | None = None,
+    end: str | None = None,
+    person: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read compact search rows through the local search index seam."""
+
+    return search_index(
+        db,
+        SearchIndexQuery(
+            query=query,
+            domains=domains,
+            limit=limit,
+            offset=offset,
+            snippet_chars=snippet_chars,
+            start=start,
+            end=end,
+            person=person,
+        ),
+    )
 
 
 def _compact_content(rows: list[dict[str, Any]]) -> str:

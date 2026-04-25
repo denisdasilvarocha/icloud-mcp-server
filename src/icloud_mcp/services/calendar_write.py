@@ -26,6 +26,9 @@ from icloud_mcp.security.secrets import load_icloud_credentials
 from icloud_mcp.tools.boundary import not_found
 from icloud_mcp.util import parse_json, utc_now
 
+_CREATE_OPERATION = "calendar.create_event"
+_UPDATE_OPERATION = "calendar.update_event"
+
 
 @dataclass
 class CalendarWriteService:
@@ -39,41 +42,23 @@ class CalendarWriteService:
 
         errors = validate_event_input(input_data)
         if errors:
-            return {"status": "invalid", "errors": errors}
+            return _invalid_status(errors)
         credentials = load_icloud_credentials(self.settings)
         if not credentials:
-            return {"status": "credential_missing", "message": "Configure ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD"}
+            return _credential_missing_status()
 
         adapter = CalDAVCalendarAdapter()
         calendar = calendar_for_write(self.db, self.settings, adapter, input_data.get("calendar_id"))
         if not calendar:
-            return {"status": "sync_required", "message": "No writable remote CalDAV calendar is known"}
+            return _calendar_sync_required_status()
 
         request_id = input_data.get("request_id")
-        if request_id:
-            existing = self.db.query_one(
-                """
-                SELECT response_json
-                FROM idempotency_keys
-                WHERE request_id = ? AND operation = 'calendar.create_event' AND response_json != ''
-                """,
-                (request_id,),
-            )
-            if existing:
-                return parse_json(existing["response_json"], {})
-        uid = (
-            f"cal_evt_{uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex}@icloud-mcp.local"
-            if request_id
-            else f"cal_evt_{uuid.uuid4().hex}@icloud-mcp.local"
-        )
-        if request_id:
-            self.db.execute(
-                """
-                INSERT OR IGNORE INTO idempotency_keys (request_id, operation, object_id, response_json, created_at)
-                VALUES (?, 'calendar.create_event', ?, ?, ?)
-                """,
-                (request_id, uid.removesuffix("@icloud-mcp.local"), "", utc_now()),
-            )
+        existing = _cached_idempotent_response(self.db, _CREATE_OPERATION, request_id)
+        if existing is not None:
+            return existing
+        event_id = _event_id_for_request(request_id)
+        uid = _uid_for_event_id(event_id)
+        _reserve_create_request(self.db, request_id, event_id)
         try:
             remote = adapter.create_event(
                 apple_id=credentials.apple_id,
@@ -111,7 +96,7 @@ class CalendarWriteService:
             raw_ics=remote.raw_ics,
             remote_state="created",
         )
-        audit_calendar_write(self.db, "calendar.create_event", result["event_id"], result["status"])
+        _audit_result(self.db, _CREATE_OPERATION, result["event_id"], result)
         return result
 
     def update_event(self, input_data: dict[str, Any]) -> dict:
@@ -120,35 +105,24 @@ class CalendarWriteService:
         event_id = input_data.get("event_id")
         patch = input_data.get("patch") or {}
         if not event_id:
-            return {"status": "invalid", "errors": ["event_id is required"]}
+            return _invalid_status(["event_id is required"])
         current = get_calendar_object(self.db, event_id)
         if not current:
             return not_found("event_id", event_id)
         errors = validate_event_patch(patch, current)
         if errors:
-            return {"status": "invalid", "errors": errors}
+            return _invalid_status(errors)
         scope = input_data.get("scope", "series")
         if scope != "series":
-            return {
-                "status": "unsupported_scope",
-                "supported_scopes": ["series"],
-                "requested_scope": scope,
-                "message": "Remote CalDAV scoped occurrence updates are not supported.",
-            }
+            return _unsupported_scope_status(scope)
         credentials = load_icloud_credentials(self.settings)
         if not credentials:
-            return {"status": "credential_missing", "message": "Configure ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD"}
+            return _credential_missing_status()
         if str(current["href"]).startswith("local://"):
-            return {"status": "sync_required", "message": "Event has no remote CalDAV href. Sync calendar first."}
+            return _event_sync_required_status()
         expected_etag = input_data.get("etag") or current.get("etag")
         if not expected_etag:
-            return {
-                "status": "conflict",
-                "event_id": event_id,
-                "message": "Missing ETag; sync event before updating.",
-                "latest_etag": None,
-                "latest": {"title": current.get("summary"), "start": current.get("dtstart"), "end": current.get("dtend")},
-            }
+            return _missing_etag_conflict_status(event_id, current)
 
         raw_ics = patched_ics(current, patch)
         try:
@@ -172,8 +146,83 @@ class CalendarWriteService:
             etag_override=remote.etag,
             raw_ics_override=remote.raw_ics,
         )
-        audit_calendar_write(self.db, "calendar.update_event", event_id, result["status"])
+        _audit_result(self.db, _UPDATE_OPERATION, event_id, result)
         return result
+
+
+def _invalid_status(errors: list[str]) -> dict:
+    return {"status": "invalid", "errors": errors}
+
+
+def _credential_missing_status() -> dict:
+    return {"status": "credential_missing", "message": "Configure ICLOUD_APPLE_ID and ICLOUD_APP_PASSWORD"}
+
+
+def _calendar_sync_required_status() -> dict:
+    return {"status": "sync_required", "message": "No writable remote CalDAV calendar is known"}
+
+
+def _event_sync_required_status() -> dict:
+    return {"status": "sync_required", "message": "Event has no remote CalDAV href. Sync calendar first."}
+
+
+def _unsupported_scope_status(scope: str) -> dict:
+    return {
+        "status": "unsupported_scope",
+        "supported_scopes": ["series"],
+        "requested_scope": scope,
+        "message": "Remote CalDAV scoped occurrence updates are not supported.",
+    }
+
+
+def _missing_etag_conflict_status(event_id: str, current: dict) -> dict:
+    return {
+        "status": "conflict",
+        "event_id": event_id,
+        "message": "Missing ETag; sync event before updating.",
+        "latest_etag": None,
+        "latest": {"title": current.get("summary"), "start": current.get("dtstart"), "end": current.get("dtend")},
+    }
+
+
+def _cached_idempotent_response(db: Database, operation: str, request_id: str | None) -> dict | None:
+    if not request_id:
+        return None
+    existing = db.query_one(
+        """
+        SELECT response_json
+        FROM idempotency_keys
+        WHERE request_id = ? AND operation = ? AND response_json != ''
+        """,
+        (request_id, operation),
+    )
+    if existing:
+        return parse_json(existing["response_json"], {})
+    return None
+
+
+def _event_id_for_request(request_id: str | None) -> str:
+    return f"cal_evt_{uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex}" if request_id else f"cal_evt_{uuid.uuid4().hex}"
+
+
+def _uid_for_event_id(event_id: str) -> str:
+    return f"{event_id}@icloud-mcp.local"
+
+
+def _reserve_create_request(db: Database, request_id: str | None, event_id: str) -> None:
+    if not request_id:
+        return
+    db.execute(
+        """
+        INSERT OR IGNORE INTO idempotency_keys (request_id, operation, object_id, response_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (request_id, _CREATE_OPERATION, event_id, "", utc_now()),
+    )
+
+
+def _audit_result(db: Database, operation: str, object_id: str, result: dict) -> None:
+    audit_calendar_write(db, operation, object_id, result["status"])
 
 
 def calendar_for_write(
