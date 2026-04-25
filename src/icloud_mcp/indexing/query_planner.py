@@ -94,6 +94,7 @@ def _relative_window(tokens: set[str], now: datetime) -> tuple[str | None, str |
 
 def _people_from_query(query: str) -> list[str]:
     markers = (" with ", " from ", " by ", " for ")
+    delimiters = {"about", "regarding", "re", "on"}
     lowered = f" {query} "
     people: list[str] = []
     for marker in markers:
@@ -101,7 +102,13 @@ def _people_from_query(query: str) -> list[str]:
         if index == -1:
             continue
         phrase = lowered[index + len(marker) :].strip(" ?.,!")
-        words = [word for word in phrase.split() if word[:1].isalpha()]
+        words = []
+        for word in phrase.split():
+            cleaned = word.strip(" ?.,!;:")
+            if cleaned.casefold() in delimiters:
+                break
+            if cleaned[:1].isalpha():
+                words.append(cleaned)
         if words:
             people.append(" ".join(words[:2]))
     return list(dict.fromkeys(people))

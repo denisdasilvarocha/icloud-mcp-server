@@ -91,6 +91,57 @@ class MCPContractTests(unittest.TestCase):
 
         self.assertEqual(result["results"][0]["id"], "mail_1")
 
+    def test_search_defaults_use_planner_domains_for_invites(self) -> None:
+        upsert_search_document(
+            self.db,
+            document_id="doc_invite",
+            domain="mail_invite",
+            object_id="mail_2",
+            title="Party invite",
+            text="party invite from Liesa",
+            metadata={"date": "2026-04-24T09:00:00+00:00"},
+        )
+
+        result = SearchService(self.db, Settings(database_path=":memory:", cursor_secret="contract-secret")).search(
+            query="party invite",
+            domains=None,
+            start=None,
+            end=None,
+            person=None,
+            limit=10,
+            include_body_snippets=True,
+            freshness_policy="allow_stale",
+            cursor_payload={"offset": 0},
+        )
+
+        self.assertEqual(result["results"][0]["domain"], "mail_invite")
+        self.assertEqual(result["results"][0]["id"], "mail_2")
+
+    def test_search_person_filter_stops_at_topic_delimiter(self) -> None:
+        upsert_search_document(
+            self.db,
+            document_id="doc_contract",
+            domain="mail",
+            object_id="mail_3",
+            title="Contract update",
+            text="Contract update from Liesa",
+            metadata={"from": {"name": "Liesa", "email": "liesa@example.com"}, "date": "2026-04-24T09:00:00+00:00"},
+        )
+
+        result = SearchService(self.db, Settings(database_path=":memory:", cursor_secret="contract-secret")).search(
+            query="mail from Liesa about contract",
+            domains=None,
+            start=None,
+            end=None,
+            person=None,
+            limit=10,
+            include_body_snippets=True,
+            freshness_policy="allow_stale",
+            cursor_payload={"offset": 0},
+        )
+
+        self.assertEqual(result["results"][0]["id"], "mail_3")
+
 
 if __name__ == "__main__":
     unittest.main()

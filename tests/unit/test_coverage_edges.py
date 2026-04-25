@@ -135,7 +135,11 @@ class CoverageEdgesTests(unittest.TestCase):
         importlib.import_module("icloud_mcp.adapters.dav_xml").parse_xml("<root/>")
         importlib.import_module("icloud_mcp.indexing.fts")
         record_metric(self.db, "x", 1.25, {"a": "b"})
-        self.assertEqual(metrics_snapshot(self.db, limit=5)["totals"], {"x": 1.25})
+        record_metric(self.db, "y", 1.0)
+        record_metric(self.db, "y", 1.0)
+        snapshot = metrics_snapshot(self.db, limit=1)
+        self.assertEqual(snapshot["totals"], {"x": 1.25, "y": 2.0})
+        self.assertEqual(len(snapshot["recent"]), 1)
 
     def test_query_planner_relative_windows_and_people(self) -> None:
         now = datetime(2026, 4, 24, 12, tzinfo=UTC)
@@ -153,6 +157,8 @@ class CoverageEdgesTests(unittest.TestCase):
             plan = plan_query(query, now=now)
             self.assertEqual(plan.intent, intent)
         self.assertEqual(plan_query("mail from Liesa Steiner", now=now).people, ["Liesa Steiner"])
+        self.assertEqual(plan_query("mail from Liesa about contract", now=now).people, ["Liesa"])
+        self.assertEqual(plan_query("mail from Liesa Steiner regarding contract", now=now).people, ["Liesa Steiner"])
         self.assertEqual(plan_query("party invite", now=now).domains, ["calendar", "mail", "mail_invite"])
 
     def test_imap_helper_and_fake_client_flows(self) -> None:
@@ -669,6 +675,12 @@ class CoverageEdgesTests(unittest.TestCase):
                 ]["why"],
                 ["semantic_match"],
             )
+        full_rows = [fake_rows[0]]
+        no_query_db = SimpleNamespace(query=lambda *args, **kwargs: self.fail("fallback query should be skipped"))
+        self.assertIs(
+            repo._add_semantic_results(no_query_db, query="meeting", domains=["mail"], rows=full_rows, limit=1),
+            full_rows,
+        )
         with patch(
             "icloud_mcp.db.repositories.query_similar_chunks", return_value=[{"chunk_id": "chunk", "distance": 0.2}]
         ):

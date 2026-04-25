@@ -631,6 +631,37 @@ END:VCALENDAR
 
         self.assertEqual({result["id"] for result in results}, {recurring["event_id"], other["event_id"]})
 
+    def test_calendar_search_time_filter_excludes_end_boundary(self) -> None:
+        included = create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Boundary Meeting",
+            start="2026-04-25T10:00:00+02:00",
+            end="2026-04-25T11:00:00+02:00",
+            timezone="Europe/Berlin",
+        )
+        create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Boundary Meeting",
+            start="2026-04-26T00:00:00+02:00",
+            end="2026-04-26T01:00:00+02:00",
+            timezone="Europe/Berlin",
+        )
+
+        results = search_documents(
+            self.db,
+            query="Boundary Meeting",
+            domains=["calendar"],
+            limit=5,
+            offset=0,
+            snippet_chars=300,
+            start="2026-04-25T00:00:00+02:00",
+            end="2026-04-26T00:00:00+02:00",
+        )
+
+        self.assertEqual([result["id"] for result in results], [included["event_id"]])
+
     def test_calendar_update_validates_partial_patch_against_current_event(self) -> None:
         created = create_calendar_event(
             self.db,

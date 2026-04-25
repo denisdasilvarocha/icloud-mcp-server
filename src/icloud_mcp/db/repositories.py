@@ -503,6 +503,8 @@ def _add_semantic_results(
     rows: list[dict[str, Any]],
     limit: int,
 ) -> list[dict[str, Any]]:
+    if len(rows) >= limit:
+        return rows
     existing = {row["id"] for row in rows}
     semantic_rows = _sqlite_vec_semantic_results(db, query=query, domains=domains, existing=existing, limit=limit)
     if semantic_rows:
@@ -720,7 +722,7 @@ def _matches_time_filter(row: dict[str, Any], metadata: dict[str, Any], *, start
     range_end_dt = _datetime_value(end, timezone) if end else None
     return not (
         (range_start_dt is not None and item_end_dt < range_start_dt)
-        or (range_end_dt is not None and item_start_dt > range_end_dt)
+        or (range_end_dt is not None and item_start_dt >= range_end_dt)
     )
 
 

@@ -41,9 +41,14 @@ def metrics_snapshot(db: Database, limit: int = 100) -> dict[str, Any]:
         """,
         (limit,),
     )
-    totals: dict[str, float] = {}
-    for row in rows:
-        totals[row["name"]] = totals.get(row["name"], 0.0) + float(row["value"])
+    total_rows = db.query(
+        """
+        SELECT name, SUM(value) AS total
+        FROM metrics
+        GROUP BY name
+        """
+    )
+    totals = {row["name"]: float(row["total"]) for row in total_rows}
     return {
         "totals": {name: round(value, 3) for name, value in sorted(totals.items())},
         "recent": [
