@@ -19,16 +19,11 @@ from icloud_mcp.adapters.carddav_contacts import (
 )
 from icloud_mcp.adapters.imap_mail import DeletedMailMessage, IMAPSyncDelta, SyncedMailbox, SyncedMailMessage
 from icloud_mcp.config import Settings
+from icloud_mcp.db.cache_state import ensure_defaults, sync_status
+from icloud_mcp.db.calendar_repository import upsert_calendar_collection, upsert_calendar_object
 from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.repositories import (
-    ensure_defaults,
-    search_documents,
-    sync_status,
-    upsert_addressbook,
-    upsert_calendar_collection,
-    upsert_calendar_object,
-    upsert_contact,
-)
+from icloud_mcp.db.contacts_repository import upsert_addressbook, upsert_contact
+from icloud_mcp.db.search_repository import search_documents
 from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
 from icloud_mcp.sync.capabilities import (
     supports_calendar_delta,

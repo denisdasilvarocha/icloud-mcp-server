@@ -11,7 +11,7 @@ from typing import Any
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.search_repository import cleanup_local_index
+from icloud_mcp.db.maintenance_repository import cleanup_local_index
 from icloud_mcp.indexing.embeddings import EmbeddingWorker
 from icloud_mcp.observability.metrics import record_metric
 from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
@@ -139,9 +139,9 @@ class SyncScheduler:
                     )
                 wait_seconds = max(60, self.settings.sync_interval_seconds)
                 with self._state_lock:
-                    self._next_run_at = (datetime.now(tz=UTC) + timedelta(seconds=wait_seconds)).replace(
-                        microsecond=0
-                    ).isoformat()
+                    self._next_run_at = (
+                        (datetime.now(tz=UTC) + timedelta(seconds=wait_seconds)).replace(microsecond=0).isoformat()
+                    )
                 self._stop.wait(wait_seconds)
         finally:
             with self._state_lock:
@@ -156,7 +156,9 @@ class SyncScheduler:
             update_checkpoint(self.db, name, "skipped", result)
             return result
         try:
-            checkpoint = self.db.query_one("SELECT retry_count, backoff_until FROM sync_checkpoints WHERE name = ?", (name,))
+            checkpoint = self.db.query_one(
+                "SELECT retry_count, backoff_until FROM sync_checkpoints WHERE name = ?", (name,)
+            )
             if checkpoint and int(checkpoint.get("retry_count") or 0) >= MAX_RETRIES:
                 result = {
                     "status": "dead_letter",
@@ -214,4 +216,3 @@ def _in_backoff(value: str | None) -> bool:
         return datetime.fromisoformat(value) > datetime.now(tz=UTC)
     except ValueError:
         return False
-

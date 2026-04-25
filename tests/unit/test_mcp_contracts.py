@@ -5,7 +5,7 @@ import unittest
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.repositories import upsert_search_document
+from icloud_mcp.db.search_repository import upsert_search_document
 from icloud_mcp.server import create_server
 from icloud_mcp.services.search import SearchService
 

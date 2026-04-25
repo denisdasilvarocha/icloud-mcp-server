@@ -16,8 +16,8 @@ from icloud_mcp.dashboard import (
     _make_handler,
     localhost_port_available,
 )
+from icloud_mcp.db.cache_state import ensure_defaults
 from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.repositories import ensure_defaults
 from icloud_mcp.server import create_server
 from icloud_mcp.sync.checkpoints import update_checkpoint
 from icloud_mcp.sync.scheduler import SyncScheduler
@@ -190,8 +190,12 @@ class DashboardTests(unittest.TestCase):
         health = DashboardSnapshotPresenter.health
 
         self.assertEqual(health({"freshness_status": {}, "workers": {"x": {"status": "running"}}})["status"], "syncing")
-        self.assertEqual(health({"freshness_status": {"mail": {"status": "stale"}}, "workers": {}})["status"], "degraded")
-        self.assertEqual(health({"freshness_status": {"mail": {"status": "healthy"}}, "workers": {}})["status"], "healthy")
+        self.assertEqual(
+            health({"freshness_status": {"mail": {"status": "stale"}}, "workers": {}})["status"], "degraded"
+        )
+        self.assertEqual(
+            health({"freshness_status": {"mail": {"status": "healthy"}}, "workers": {}})["status"], "healthy"
+        )
         self.assertEqual(_health({"freshness_status": {}, "workers": {}})["status"], "healthy")
         self.assertFalse(
             _activity(

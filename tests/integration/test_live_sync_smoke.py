@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from icloud_mcp.config import Settings
+from icloud_mcp.db.cache_state import ensure_defaults, sync_status
 from icloud_mcp.db.connection import Database, open_db
-from icloud_mcp.db.repositories import ensure_defaults, sync_status
 from icloud_mcp.server import create_server
 from icloud_mcp.sync.scheduler import SyncScheduler
 
