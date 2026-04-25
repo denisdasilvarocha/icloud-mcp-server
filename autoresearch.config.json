@@ -1,0 +1,13 @@
+{
+  "maxIterations": 5,
+  "recipeId": "pytest-runtime",
+  "commitPaths": [
+    "autoresearch.md",
+    "autoresearch.jsonl",
+    "autoresearch.sh",
+    "autoresearch.checks.sh",
+    "autoresearch.ideas.md",
+    "autoresearch.config.json",
+    ".gitattributes"
+  ]
+}
