@@ -96,10 +96,20 @@ def cursor_error(exc: Exception) -> dict[str, str]:
     return {"status": "invalid_cursor", "reason": "tampered_or_malformed"}
 
 
-def next_cursor(offset: int, returned: int, limit: int, secret: str, extra: dict[str, Any] | None = None) -> str | None:
+def next_cursor(
+    offset: int,
+    returned: int,
+    limit: int,
+    secret: str,
+    extra: dict[str, Any] | None = None,
+    *,
+    has_more: bool | None = None,
+) -> str | None:
     """Build next cursor when more rows may be available."""
 
-    if returned < limit:
+    if has_more is None:
+        has_more = returned >= limit
+    if not has_more:
         return None
     payload = {
         "offset": offset + returned,

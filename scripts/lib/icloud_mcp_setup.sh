@@ -103,21 +103,26 @@ build_payload_json() {
   local apple_id="$3"
   local app_password="$4"
   local sync_on_start="$5"
+  if [ "${ICLOUD_SETUP_PERSIST_APP_PASSWORD:-false}" != "true" ]; then
+    app_password=""
+  fi
   "$PYTHON_BIN" - "$root" "$uv_bin" "$apple_id" "$app_password" "$sync_on_start" <<'PY'
 import json
 import sys
 
 root, uv_bin, apple_id, app_password, sync_on_start = sys.argv[1:]
+env = {
+    "ICLOUD_APPLE_ID": apple_id,
+    "ICLOUD_MCP_SYNC_ON_START": sync_on_start,
+}
+if app_password:
+    env["ICLOUD_APP_PASSWORD"] = app_password
 payload = {
     "name": "icloud",
     "command": uv_bin,
     "args": ["run", "--project", root, "icloud-mcp"],
     "cwd": root,
-    "env": {
-        "ICLOUD_APPLE_ID": apple_id,
-        "ICLOUD_APP_PASSWORD": app_password,
-        "ICLOUD_MCP_SYNC_ON_START": sync_on_start,
-    },
+    "env": env,
 }
 print(json.dumps(payload))
 PY
@@ -133,6 +138,21 @@ print(create_server)
 PY
 }
 
+store_keychain_credentials() {
+  local root="$1"
+  local uv_bin="$2"
+  if [ "${ICLOUD_SETUP_PERSIST_APP_PASSWORD:-false}" = "true" ]; then
+    return
+  fi
+  "$uv_bin" run --project "$root" python - "$ICLOUD_SETUP_APPLE_ID" "$ICLOUD_SETUP_APP_PASSWORD" <<'PY'
+import sys
+
+from icloud_mcp.security.secrets import store_icloud_credentials
+
+store_icloud_credentials(sys.argv[1], sys.argv[2])
+PY
+}
+
 add_git_exclude() {
   local root="$1"
   local rel_path="$2"
@@ -145,19 +165,24 @@ add_git_exclude() {
 
 write_env_file() {
   local path="$1"
+  local app_password=""
+  if [ "${ICLOUD_SETUP_PERSIST_APP_PASSWORD:-false}" = "true" ]; then
+    app_password="$ICLOUD_SETUP_APP_PASSWORD"
+  fi
   mkdir -p "$(dirname "$path")"
   touch "$path"
   chmod 600 "$path"
-  "$PYTHON_BIN" - "$path" "$ICLOUD_SETUP_APPLE_ID" "$ICLOUD_SETUP_APP_PASSWORD" "$ICLOUD_SETUP_SYNC_ON_START" <<'PY'
+  "$PYTHON_BIN" - "$path" "$ICLOUD_SETUP_APPLE_ID" "$app_password" "$ICLOUD_SETUP_SYNC_ON_START" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 values = {
     "ICLOUD_APPLE_ID": sys.argv[2],
-    "ICLOUD_APP_PASSWORD": sys.argv[3],
     "ICLOUD_MCP_SYNC_ON_START": sys.argv[4],
 }
+if sys.argv[3]:
+    values["ICLOUD_APP_PASSWORD"] = sys.argv[3]
 lines = []
 if path.exists():
     for line in path.read_text().splitlines():

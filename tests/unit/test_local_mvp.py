@@ -12,6 +12,7 @@ from icloud_mcp.db.repositories import (
     index_generation,
     list_contacts,
     list_events,
+    list_mail,
     query_cache_get,
     query_cache_set,
     search_contacts,
@@ -34,6 +35,7 @@ from icloud_mcp.schemas.calendar import UpdateEventInput
 from icloud_mcp.security.redaction import redact_text
 from icloud_mcp.server import register_resources_and_prompts
 from icloud_mcp.tools.calendar_tools import register_calendar_tools
+from icloud_mcp.util import decode_cursor
 
 
 class LocalMVPTests(unittest.TestCase):
@@ -186,6 +188,18 @@ class LocalMVPTests(unittest.TestCase):
             {"start": "2026-04-27T12:00:00+02:00", "end": "2026-04-27T13:00:00"}
         )
         self.assertIn("start and end must both include timezone offsets or both omit them", patch_errors)
+
+    def test_calendar_validation_rejects_offset_timezone_names(self) -> None:
+        errors = validate_event_input(
+            {
+                "title": "Offset TZID",
+                "start": "2026-04-27T12:00:00+02:00",
+                "end": "2026-04-27T13:00:00+02:00",
+                "timezone": "+02:00",
+            }
+        )
+
+        self.assertIn("timezone must be a valid IANA timezone", errors)
 
     def test_calendar_tool_rejects_scoped_remote_updates_before_credentials(self) -> None:
         created = create_calendar_event(
@@ -613,6 +627,87 @@ END:VCALENDAR
         self.assertEqual(backend["available"], 1)
         self.assertEqual(results[0]["id"], "mail_msg_vector")
         self.assertEqual(results[0]["why"], ["sqlite_vec_match"])
+
+    def test_sqlite_vec_semantic_gate_suppresses_nonsense_queries(self) -> None:
+        upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
+        upsert_mail_message(
+            self.db,
+            account_id=self.settings.default_account_id,
+            mailbox_id="mb_inbox",
+            message_id="mail_msg_vector_noise",
+            uid=1,
+            subject="Contract timeline",
+            from_address={"name": "Liesa", "email": "liesa@example.com"},
+            to_addresses=[{"name": "Me", "email": "me@example.com"}],
+            date="2026-04-24T09:00:00+02:00",
+            preview="The contract deadline is Friday.",
+            body_text="The contract deadline is Friday.",
+        )
+        EmbeddingWorker(self.db).run_once()
+
+        results = search_documents(self.db, query="zzqxjv-no-such-token", domains=["mail"], limit=5, offset=0, snippet_chars=300)
+
+        self.assertEqual(results, [])
+
+    def test_embedding_worker_batches_pending_chunks(self) -> None:
+        for index in range(251):
+            self.db.execute(
+                """
+                INSERT INTO search_chunks (id, document_id, chunk_index, text, text_hash, updated_at)
+                VALUES (?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (f"chunk_{index}", f"doc_{index}", 0, f"text {index}", f"hash_{index}"),
+            )
+
+        result = EmbeddingWorker(self.db).run_once()
+        pending = self.db.query_one("SELECT COUNT(*) AS count FROM search_chunks WHERE embedding_status = 'pending'")
+
+        self.assertEqual(result["embedded_chunks"], 250)
+        self.assertEqual(pending["count"], 1)
+
+    def test_list_mail_cursor_uses_raw_availability(self) -> None:
+        upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
+        for uid in range(2):
+            upsert_mail_message(
+                self.db,
+                account_id=self.settings.default_account_id,
+                mailbox_id="mb_inbox",
+                message_id=f"mail_msg_{uid}",
+                uid=uid + 1,
+                subject=f"Message {uid}",
+                from_address={"name": "Liesa", "email": "liesa@example.com"},
+                to_addresses=[],
+                date=f"2026-04-24T0{uid}:00:00+00:00",
+                preview="Preview",
+                body_text="Body",
+            )
+
+        page = list_mail(
+            self.db,
+            mailbox="INBOX",
+            after=None,
+            before=None,
+            sender=None,
+            limit=1,
+            offset=0,
+            cursor_secret=self.settings.cursor_secret,
+        )
+
+        self.assertEqual(len(page["messages"]), 1)
+        self.assertEqual(decode_cursor(page["next_cursor"], self.settings.cursor_secret)["offset"], 1)
+
+    def test_hot_path_indexes_exist(self) -> None:
+        indexes = {
+            row["name"]
+            for table in ["mail_messages", "calendar_occurrences", "search_documents", "contacts", "query_cache"]
+            for row in self.db.query(f"PRAGMA index_list({table})")
+        }
+
+        self.assertIn("idx_mail_messages_mailbox_deleted_date", indexes)
+        self.assertIn("idx_calendar_occurrences_start_end_event", indexes)
+        self.assertIn("idx_search_documents_domain_deleted_object", indexes)
+        self.assertIn("idx_contacts_addressbook_deleted_display", indexes)
+        self.assertIn("idx_query_cache_expires_generation", indexes)
 
     def test_registered_prompt_marks_retrieved_content_untrusted(self) -> None:
         class FakeMCP:

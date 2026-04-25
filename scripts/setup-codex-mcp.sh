@@ -14,6 +14,7 @@ main() {
   prompt_scope
   prompt_sync_on_start
   ensure_project_ready "$ROOT" "$UV_BIN"
+  store_keychain_credentials "$ROOT" "$UV_BIN"
 
   if [ "$ICLOUD_SETUP_SCOPE" = "project" ]; then
     CONFIG_PATH="$ROOT/.codex/config.toml"

@@ -80,13 +80,15 @@ class SearchService:
             self.db,
             query=effective_query,
             domains=db_domains,
-            limit=safe_limit,
+            limit=safe_limit + 1,
             offset=offset,
             snippet_chars=self.settings.snippet_chars if include_body_snippets else 160,
             start=effective_start,
             end=effective_end,
             person=person or (planned_people[0] if planned_people else None),
         )
+        has_more = len(rows) > safe_limit
+        rows = rows[:safe_limit]
         response = {
             "content": _compact_content(rows),
             "structured_content": {"results": rows},
@@ -105,7 +107,12 @@ class SearchService:
             "answer_hints": answer_hints(query, rows, plan.intent),
             "results": rows,
             "next_cursor": next_cursor(
-                offset, len(rows), safe_limit, self.settings.cursor_secret, {"index_generation": generation}
+                offset,
+                len(rows),
+                safe_limit,
+                self.settings.cursor_secret,
+                {"index_generation": generation},
+                has_more=has_more,
             ),
             "meta": {"cache": "miss", "index_generation": generation, "refresh": refresh_status},
         }

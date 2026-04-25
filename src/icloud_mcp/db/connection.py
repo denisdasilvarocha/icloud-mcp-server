@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
   summary TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
 """
 
 SCHEMA_VERSION = 2
@@ -331,6 +332,7 @@ def run_migrations(db: Database) -> None:
     _ensure_column(db, "sync_checkpoints", "retry_count", "INTEGER DEFAULT 0")
     _ensure_column(db, "sync_checkpoints", "backoff_until", "TEXT")
     _ensure_column(db, "sync_checkpoints", "progress_cursor", "TEXT")
+    _ensure_indexes(db)
     db.execute(
         """
         INSERT OR IGNORE INTO schema_migrations (version, applied_at)
@@ -345,3 +347,54 @@ def _ensure_column(db: Database, table: str, column: str, definition: str) -> No
     if column in existing:
         return
     db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _ensure_indexes(db: Database) -> None:
+    indexes = [
+        (
+            "mail_messages",
+            {"mailbox_id", "deleted_at", "date"},
+            "CREATE INDEX IF NOT EXISTS idx_mail_messages_mailbox_deleted_date "
+            "ON mail_messages(mailbox_id, deleted_at, date DESC)",
+        ),
+        (
+            "calendar_occurrences",
+            {"occurrence_start", "occurrence_end", "event_id"},
+            "CREATE INDEX IF NOT EXISTS idx_calendar_occurrences_start_end_event "
+            "ON calendar_occurrences(occurrence_start, occurrence_end, event_id)",
+        ),
+        (
+            "calendar_objects",
+            {"calendar_id", "deleted_at"},
+            "CREATE INDEX IF NOT EXISTS idx_calendar_objects_calendar_deleted "
+            "ON calendar_objects(calendar_id, deleted_at)",
+        ),
+        (
+            "search_documents",
+            {"domain", "deleted_at", "object_id"},
+            "CREATE INDEX IF NOT EXISTS idx_search_documents_domain_deleted_object "
+            "ON search_documents(domain, deleted_at, object_id)",
+        ),
+        (
+            "contacts",
+            {"addressbook_id", "deleted_at", "display_name"},
+            "CREATE INDEX IF NOT EXISTS idx_contacts_addressbook_deleted_display "
+            "ON contacts(addressbook_id, deleted_at, display_name)",
+        ),
+        (
+            "person_aliases",
+            {"contact_id", "confidence"},
+            "CREATE INDEX IF NOT EXISTS idx_person_aliases_contact_confidence "
+            "ON person_aliases(contact_id, confidence DESC)",
+        ),
+        (
+            "query_cache",
+            {"expires_at", "index_generation"},
+            "CREATE INDEX IF NOT EXISTS idx_query_cache_expires_generation "
+            "ON query_cache(expires_at, index_generation)",
+        ),
+    ]
+    for table, required_columns, sql in indexes:
+        columns = {row["name"] for row in db.query(f"PRAGMA table_info({table})")}
+        if required_columns <= columns:
+            db.execute(sql)

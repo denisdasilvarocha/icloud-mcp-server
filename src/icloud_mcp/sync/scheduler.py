@@ -124,19 +124,31 @@ class SyncScheduler:
             }
 
     def _loop(self) -> None:
-        while not self._stop.is_set():
+        try:
+            while not self._stop.is_set():
+                with self._state_lock:
+                    self._next_run_at = None
+                try:
+                    self.sync_now()
+                except Exception as exc:
+                    LOGGER.exception("Background sync cycle failed")
+                    record_metric(self.db, "sync.loop_failure", 1, {"error": exc.__class__.__name__})
+                    update_checkpoint(
+                        self.db,
+                        "maintenance_worker",
+                        "error",
+                        {"status": "error", "reason": "background_loop", "error": exc.__class__.__name__},
+                    )
+                wait_seconds = max(60, self.settings.sync_interval_seconds)
+                with self._state_lock:
+                    self._next_run_at = (datetime.now(tz=UTC) + timedelta(seconds=wait_seconds)).replace(
+                        microsecond=0
+                    ).isoformat()
+                self._stop.wait(wait_seconds)
+        finally:
             with self._state_lock:
+                self._background_running = False
                 self._next_run_at = None
-            self.sync_now()
-            wait_seconds = max(60, self.settings.sync_interval_seconds)
-            with self._state_lock:
-                self._next_run_at = (datetime.now(tz=UTC) + timedelta(seconds=wait_seconds)).replace(
-                    microsecond=0
-                ).isoformat()
-            self._stop.wait(wait_seconds)
-        with self._state_lock:
-            self._background_running = False
-            self._next_run_at = None
 
     def _run_worker_with_gate(self, worker: object) -> dict:
         name = worker.name

@@ -107,6 +107,23 @@ class CoverageEdgesTests(unittest.TestCase):
         self.assertTrue(settings.attachment_text_indexing)
         self.assertEqual(credentials, ICloudCredentials("person@example.com", "app-pass"))
         read.assert_called()
+        with patch.dict("os.environ", {"ICLOUD_MCP_SYNC_INTERVAL_SECONDS": "bad"}, clear=True), self.assertRaisesRegex(
+            ValueError, "ICLOUD_MCP_SYNC_INTERVAL_SECONDS must be an integer"
+        ):
+            Settings.from_env()
+        with patch.dict("os.environ", {"ICLOUD_MCP_SYNC_ON_START": "maybe"}, clear=True), self.assertRaisesRegex(
+            ValueError, "ICLOUD_MCP_SYNC_ON_START must be a boolean"
+        ):
+            Settings.from_env()
+        with patch.dict("os.environ", {"ICLOUD_MCP_SYNC_INTERVAL_SECONDS": "59"}, clear=True), self.assertRaisesRegex(
+            ValueError, "ICLOUD_MCP_SYNC_INTERVAL_SECONDS must be at least 60"
+        ):
+            Settings.from_env()
+        with patch.dict("os.environ", {"ICLOUD_MCP_MAIL_SYNC_DAYS": "3651"}, clear=True), self.assertRaisesRegex(
+            ValueError, "ICLOUD_MCP_MAIL_SYNC_DAYS must be at most 3650"
+        ):
+            Settings.from_env()
+        self.assertNotEqual(Settings().cursor_secret, Settings().cursor_secret)
 
         keyring = SimpleNamespace(set_password=lambda *args: None, get_password=lambda *args: "pw")
         with patch.dict("sys.modules", {"keyring": keyring}):
@@ -656,10 +673,19 @@ class CoverageEdgesTests(unittest.TestCase):
             "icloud_mcp.db.repositories.query_similar_chunks", return_value=[{"chunk_id": "chunk", "distance": 0.2}]
         ):
             self.assertEqual(
-                repo._sqlite_vec_semantic_results(_SqliteSemanticDb(), query="x", domains=["mail"], existing={"skip"}, limit=1)[
-                    0
-                ]["score"],
+                repo._sqlite_vec_semantic_results(
+                    _SqliteSemanticDb(), query="sqlite", domains=["mail"], existing={"skip"}, limit=1
+                )[0]["score"],
                 0.8,
+            )
+        with patch(
+            "icloud_mcp.db.repositories.query_similar_chunks", return_value=[{"chunk_id": "chunk", "distance": 0.01}]
+        ):
+            self.assertEqual(
+                repo._sqlite_vec_semantic_results(
+                    _SqliteSemanticDb(), query="nonsense", domains=["mail"], existing={"skip"}, limit=1
+                ),
+                [],
             )
         alias_db = SimpleNamespace(query=lambda sql, params=(): [{"alias": "Liesa"}, {"alias": "Liesa S"}])
         self.assertEqual(repo.person_alias_terms(alias_db, "Liesa"), ["Liesa", "Liesa S"])
@@ -893,6 +919,24 @@ END:VCALENDAR
         self.assertEqual(answer_hints("x", [{"id": "a", "domain": "x", "score": 0.8}, {"id": "b", "domain": "x", "score": 0.78}])[0]["type"], "ambiguous_candidates")
         self.assertEqual(answer_hints("x", [{"id": "a", "domain": "x", "score": 0.8}, {"id": "b", "domain": "x", "score": 0.1}]), [])
         self.assertEqual(_external_domains(["contact", "mail"]), ["contacts", "mail"])
+        paged_rows = [
+            {"id": "one", "document_id": "doc_one", "domain": "mail", "title": "One", "snippet": "one", "score": 1.0},
+            {"id": "two", "document_id": "doc_two", "domain": "mail", "title": "Two", "snippet": "two", "score": 0.9},
+        ]
+        with patch("icloud_mcp.services.search.search_documents", return_value=paged_rows):
+            paged = SearchService(self.db, self.settings).search(
+                query="paged",
+                domains=["mail"],
+                start=None,
+                end=None,
+                person=None,
+                limit=1,
+                include_body_snippets=True,
+                freshness_policy="refresh_if_stale",
+                cursor_payload={"offset": 0},
+            )
+        self.assertEqual(len(paged["results"]), 1)
+        self.assertIsNotNone(paged["next_cursor"])
         self.assertEqual(_refresh_status("refresh_if_stale", {"mail": {"status": "fresh"}})["status"], "fresh")
         self.assertEqual(_refresh_status("refresh_if_stale", {"mail": {"status": "never_synced"}})["status"], "refresh_unavailable_inline")
 
@@ -1201,6 +1245,18 @@ END:VCALENDAR
         with patch.object(loop_scheduler, "sync_now", return_value={"ok": True}) as sync_now:
             loop_scheduler._loop()
         sync_now.assert_called_once()
+        failing_loop = scheduler_mod.SyncScheduler(self.db, settings)
+        failing_state = {"count": 0}
+
+        def fail_once_is_set() -> bool:
+            failing_state["count"] += 1
+            return failing_state["count"] > 1
+
+        failing_loop._stop = SimpleNamespace(is_set=fail_once_is_set, wait=lambda timeout: None)
+        with patch.object(failing_loop, "sync_now", side_effect=RuntimeError("boom")):
+            failing_loop._loop()
+        checkpoint = self.db.query_one("SELECT status FROM sync_checkpoints WHERE name = ?", ("maintenance_worker",))
+        self.assertEqual(checkpoint["status"], "error")
         exception_scheduler = scheduler_mod.SyncScheduler(self.db, settings)
         with patch.object(exception_scheduler, "sync_now", return_value={"ok": True}), patch.object(
             exception_scheduler._stop, "wait", side_effect=KeyboardInterrupt

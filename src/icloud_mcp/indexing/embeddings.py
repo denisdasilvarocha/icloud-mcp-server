@@ -10,6 +10,8 @@ from icloud_mcp.indexing.vector_backend import ensure_vector_backend, upsert_chu
 from icloud_mcp.sync.checkpoints import update_checkpoint
 from icloud_mcp.util import compact_json, utc_now
 
+EMBEDDING_BATCH_LIMIT = 250
+
 
 @dataclass
 class EmbeddingWorker:
@@ -24,7 +26,16 @@ class EmbeddingWorker:
         """Mark pending chunks as embedded by the local deterministic model."""
 
         backend_available = ensure_vector_backend(self.db)
-        rows = self.db.query("SELECT id, text FROM search_chunks WHERE embedding_status = 'pending'")
+        rows = self.db.query(
+            """
+            SELECT id, text
+            FROM search_chunks
+            WHERE embedding_status = 'pending'
+            ORDER BY updated_at, id
+            LIMIT ?
+            """,
+            (EMBEDDING_BATCH_LIMIT,),
+        )
         for row in rows:
             if backend_available:
                 upsert_chunk_vector(self.db, row["id"], row["text"])

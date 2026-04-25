@@ -47,7 +47,7 @@ scripts/setup-hermes-agent-mcp.sh
 scripts/setup-all-mcp.sh
 ```
 
-Each script asks for your Apple ID, app-specific password, sync-on-start preference, and config scope. Project-scoped secret config paths are added to `.git/info/exclude`.
+Each script asks for your Apple ID, app-specific password, sync-on-start preference, and config scope. By default the app-specific password is stored in the OS keychain, not generated MCP config. Set `ICLOUD_SETUP_PERSIST_APP_PASSWORD=true` only if you explicitly want setup-generated config to include `ICLOUD_APP_PASSWORD`. Project-scoped config paths are added to `.git/info/exclude`.
 
 > [!TIP]
 > Use `scripts/setup-all-mcp.sh` when you want Codex, Claude Code, and Hermes Agent configured with the same settings.
@@ -83,7 +83,7 @@ Prompt:
 | `ICLOUD_APPLE_ID` | unset | Apple ID / iCloud email for sync adapters. |
 | `ICLOUD_APP_PASSWORD` | unset | App-specific password for sync adapters. |
 | `ICLOUD_MCP_DATABASE_PATH` | `~/.local/share/icloud-mcp/icloud-mcp.sqlite3` | SQLite cache path. |
-| `ICLOUD_MCP_CURSOR_SECRET` | local dev value | HMAC secret for paginated cursors. |
+| `ICLOUD_MCP_CURSOR_SECRET` | generated per process | HMAC secret for paginated cursors. Set a stable value to preserve cursors across restarts. |
 | `ICLOUD_MCP_USE_KEYCHAIN` | `true` | Read app password from OS keychain when env password is absent. |
 | `ICLOUD_MCP_SYNC_ON_START` | `true` | Start background sync when the MCP server starts. |
 | `ICLOUD_MCP_SYNC_INTERVAL_SECONDS` | `900` | Background sync interval. |

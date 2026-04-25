@@ -373,6 +373,10 @@ def cleanup_local_index(db: Database) -> dict[str, int]:
     }
 
 
+MIN_SEMANTIC_SCORE = 0.2
+MIN_SQLITE_VEC_SCORE = 0.1
+
+
 def search_documents(
     db: Database,
     *,
@@ -388,7 +392,7 @@ def search_documents(
     """Run local lexical FTS search and return compact rows."""
 
     terms = tokenize(query)
-    query_limit = min(limit * 5, 100) if (start or end or person) else limit
+    query_limit = min(max(limit * 5, limit + 1), 100)
     if terms:
         fts_query = " OR ".join(f'"{term}"' for term in terms[:8])
         placeholders = ",".join("?" for _ in domains)
@@ -501,7 +505,7 @@ def _add_semantic_results(
             if isinstance(vector, dict)
             else cosine_score(query, candidate["canonical_text"])
         )
-        if score <= 0:
+        if score < MIN_SEMANTIC_SCORE:
             continue
         candidate["score"] = score
         candidate["why"] = ["semantic_match"]
@@ -569,7 +573,10 @@ def _sqlite_vec_semantic_results(
         if row["id"] in existing:
             continue
         distance = distances.get(row["chunk_id"], 1.0)
-        row["score"] = max(0.0, 1.0 - distance)
+        score = 1.0 - distance if distance <= 1.0 else 1.0 / (1.0 + distance)
+        if score < MIN_SQLITE_VEC_SCORE or cosine_score(query, row.get("matched_text") or row["canonical_text"]) <= 0:
+            continue
+        row["score"] = score
         row["why"] = ["sqlite_vec_match"]
         semantic_rows.append(row)
     semantic_rows.sort(key=lambda row: row["score"], reverse=True)
@@ -906,10 +913,11 @@ def list_events(
         ORDER BY co.occurrence_start
         LIMIT ? OFFSET ?
         """,
-        (*parameters, limit, offset),
+        (*parameters, limit + 1, offset),
     )
-    events = [_calendar_summary(row) for row in rows]
-    return {"events": events, "next_cursor": next_cursor(offset, len(events), limit, cursor_secret)}
+    has_more = len(rows) > limit
+    events = [_calendar_summary(row) for row in rows[:limit]]
+    return {"events": events, "next_cursor": next_cursor(offset, len(events), limit, cursor_secret, has_more=has_more)}
 
 
 def view_event(db: Database, event_id: str, include_raw_ics: bool) -> dict[str, Any] | None:
@@ -1643,8 +1651,9 @@ def list_mail(
         ORDER BY m.date DESC
         LIMIT ? OFFSET ?
         """,
-        (*parameters, limit, offset),
+        (*parameters, limit + 1, offset),
     )
+    has_more = len(rows) > limit
     messages = [
         {
             "id": row["id"],
@@ -1655,9 +1664,12 @@ def list_mail(
             "preview": row["preview"],
             "has_attachments": bool(row["has_attachments"]),
         }
-        for row in rows
+        for row in rows[:limit]
     ]
-    return {"messages": messages, "next_cursor": next_cursor(offset, len(messages), limit, cursor_secret)}
+    return {
+        "messages": messages,
+        "next_cursor": next_cursor(offset, len(messages), limit, cursor_secret, has_more=has_more),
+    }
 
 
 def view_mail(
@@ -1927,10 +1939,14 @@ def list_contacts(
         ORDER BY display_name
         LIMIT ? OFFSET ?
         """,
-        (*parameters, limit, offset),
+        (*parameters, limit + 1, offset),
     )
-    contacts = [_contact_summary(row) for row in rows]
-    return {"contacts": contacts, "next_cursor": next_cursor(offset, len(contacts), limit, cursor_secret)}
+    has_more = len(rows) > limit
+    contacts = [_contact_summary(row) for row in rows[:limit]]
+    return {
+        "contacts": contacts,
+        "next_cursor": next_cursor(offset, len(contacts), limit, cursor_secret, has_more=has_more),
+    }
 
 
 def upsert_addressbook(
@@ -2114,7 +2130,7 @@ def search_contacts(
         WHERE contact_trigram_fts MATCH ? AND c.deleted_at IS NULL
         LIMIT ? OFFSET ?
         """,
-        (trigram_query, limit, offset),
+        (trigram_query, limit + 1, offset),
     )
     rows = db.query(
         """
@@ -2131,7 +2147,7 @@ def search_contacts(
         ORDER BY COALESCE(MAX(pa.confidence), 0.5) DESC, c.display_name
         LIMIT ? OFFSET ?
         """,
-        (f"%{normalized}%", f"%{query}%", f"%{query}%", limit, offset),
+        (f"%{normalized}%", f"%{query}%", f"%{query}%", limit + 1, offset),
     )
     merged: dict[str, dict[str, Any]] = {}
     for row in [*rows, *trigram_rows]:
@@ -2140,13 +2156,15 @@ def search_contacts(
             continue
         merged[row["id"]] = row
     contacts = []
-    for row in sorted(merged.values(), key=lambda item: (-(float(item.get("confidence") or 0.5)), item["display_name"])):
+    sorted_rows = sorted(merged.values(), key=lambda item: (-(float(item.get("confidence") or 0.5)), item["display_name"]))
+    has_more = len(sorted_rows) > limit or len(rows) > limit or len(trigram_rows) > limit
+    for row in sorted_rows[:limit]:
         contact = _contact_summary(row)
         contact["score"] = round(float(row.get("confidence") or 0.5), 3)
         contacts.append(contact)
     response = {"contacts": contacts}
     if cursor_secret:
-        response["next_cursor"] = next_cursor(offset, len(contacts), limit, cursor_secret)
+        response["next_cursor"] = next_cursor(offset, len(contacts), limit, cursor_secret, has_more=has_more)
     return response
 
 
@@ -2198,6 +2216,8 @@ def validate_event_input(input_data: dict[str, Any]) -> list[str]:
         errors.append("end is required")
     if not timezone:
         errors.append("timezone is required")
+    elif not _valid_iana_timezone(str(timezone)):
+        errors.append("timezone must be a valid IANA timezone")
     if start and end:
         try:
             start_dt = datetime.fromisoformat(str(start))
@@ -2225,6 +2245,14 @@ def validate_event_input(input_data: dict[str, Any]) -> list[str]:
             errors.append("recurrence count must be 730 or fewer")
 
     return errors
+
+
+def _valid_iana_timezone(timezone: str) -> bool:
+    try:
+        ZoneInfo(timezone)
+    except Exception:
+        return False
+    return True
 
 
 def validate_event_patch(patch: dict[str, Any]) -> list[str]:
