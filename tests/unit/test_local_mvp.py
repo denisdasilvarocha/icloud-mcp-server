@@ -6,6 +6,7 @@ import unittest
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import open_db
 from icloud_mcp.db.repositories import (
+    cleanup_local_index,
     create_calendar_event,
     ensure_defaults,
     index_generation,
@@ -18,6 +19,8 @@ from icloud_mcp.db.repositories import (
     sync_status,
     tombstone_contact,
     update_calendar_event,
+    upsert_calendar_collection,
+    upsert_calendar_object,
     upsert_contact,
     upsert_mail_message,
     upsert_mailbox,
@@ -247,6 +250,88 @@ class LocalMVPTests(unittest.TestCase):
 
         self.assertEqual(mail[0]["id"], "mail_msg_1")
         self.assertEqual(contacts[0]["id"], "contact_1")
+
+    def test_duplicate_sync_rows_are_normalized_and_cleaned(self) -> None:
+        upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
+        for message_id in ["mail_msg_old", "mail_msg_new"]:
+            upsert_mail_message(
+                self.db,
+                account_id=self.settings.default_account_id,
+                mailbox_id="mb_inbox",
+                message_id=message_id,
+                uid=1,
+                subject="Contract deadline",
+                from_address={"name": "Liesa", "email": "liesa@example.com"},
+                to_addresses=[{"name": "Me", "email": "me@example.com"}],
+                date="2026-04-24T09:00:00+02:00",
+                preview="Deadline is Friday.",
+                body_text="The contract deadline is Friday at noon.",
+            )
+
+        upsert_contact(
+            self.db,
+            addressbook_id=self.settings.default_addressbook_id,
+            contact_id="contact_old",
+            href="local://contacts/duplicate.vcf",
+            raw_vcard="BEGIN:VCARD\nFN:Liesa\nEMAIL:liesa@example.com\nEND:VCARD",
+            display_name="Liesa",
+            emails=["liesa@example.com"],
+        )
+        upsert_contact(
+            self.db,
+            addressbook_id=self.settings.default_addressbook_id,
+            contact_id="contact_new",
+            href="local://contacts/duplicate.vcf",
+            raw_vcard="BEGIN:VCARD\nFN:Liesa Updated\nEMAIL:liesa@example.com\nEND:VCARD",
+            display_name="Liesa Updated",
+            emails=["liesa@example.com"],
+        )
+        upsert_calendar_collection(
+            self.db,
+            account_id=self.settings.default_account_id,
+            calendar_id="cal_remote",
+            url="https://cal.example/main/",
+            display_name="Calendar",
+        )
+        calendar_kwargs = {
+            "calendar_id": "cal_remote",
+            "href": "https://cal.example/main/1.ics",
+            "uid": "event-1",
+            "etag": '"1"',
+            "raw_ics": "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:event-1\nSUMMARY:Weekly\nEND:VEVENT\nEND:VCALENDAR",
+            "summary": "Weekly",
+            "description": None,
+            "location": None,
+            "dtstart": "2026-04-21T10:00:00+00:00",
+            "dtend": "2026-04-21T11:00:00+00:00",
+            "timezone": "UTC",
+            "rrule": "RRULE:FREQ=WEEKLY;COUNT=2",
+        }
+        upsert_calendar_object(self.db, event_id="cal_evt_old", **calendar_kwargs)
+        upsert_calendar_object(self.db, event_id="cal_evt_new", **calendar_kwargs)
+
+        cleanup = cleanup_local_index(self.db)
+
+        self.assertEqual(self.db.query_one("SELECT COUNT(*) AS value FROM mail_messages")["value"], 1)
+        self.assertEqual(self.db.query_one("SELECT id FROM mail_messages WHERE mailbox_id = ? AND uid = ?", ("mb_inbox", 1))["id"], "mail_msg_new")
+        self.assertEqual(self.db.query_one("SELECT COUNT(*) AS value FROM contacts")["value"], 1)
+        self.assertEqual(self.db.query_one("SELECT COUNT(*) AS value FROM calendar_objects")["value"], 1)
+        self.assertEqual(self.db.query_one("SELECT COUNT(*) AS value FROM calendar_occurrences")["value"], 2)
+        self.assertGreaterEqual(cleanup["removed_documents"], 3)
+        self.assertEqual(
+            self.db.query_one(
+                """
+                SELECT COUNT(*) AS value
+                FROM search_documents d
+                WHERE d.object_id NOT IN (
+                  SELECT id FROM mail_messages
+                  UNION SELECT id FROM contacts
+                  UNION SELECT id FROM calendar_objects
+                )
+                """
+            )["value"],
+            0,
+        )
 
     def test_mail_view_body_paginates_large_bodies(self) -> None:
         upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")

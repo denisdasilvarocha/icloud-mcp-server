@@ -274,7 +274,7 @@ def _incremental_uids(client: Any, state: dict[str, Any], *, since: date) -> lis
     if state.get("last_synced_uid") and not state.get("known_uids"):
         return [int(uid) for uid in client.search(["SINCE", since])]
     last_uid = int(state.get("last_synced_uid") or 0)
-    uid_query = ["UID", f"{last_uid + 1}:*"] if last_uid else ["ALL"]
+    uid_query = ["UID", f"{last_uid + 1}:*"] if last_uid else ["SINCE", since]
     uids = {int(uid) for uid in client.search(uid_query)}
     highest_modseq = state.get("highest_modseq")
     if highest_modseq:
@@ -348,7 +348,7 @@ def _body_text(message: Message) -> str:
         for part in message.walk():
             if part.get_content_maintype() == "multipart":
                 continue
-            disposition = (part.get("Content-Disposition") or "").lower()
+            disposition = _header_text(part.get("Content-Disposition")).lower()
             if "attachment" in disposition:
                 continue
             _append_part_text(part, plain_parts, html_parts)
@@ -379,7 +379,7 @@ def _append_part_text(part: Message, plain_parts: list[str], html_parts: list[st
 def _attachments(message: Message) -> list[dict[str, Any]]:
     attachments = []
     for part in message.walk():
-        disposition = (part.get("Content-Disposition") or "").lower()
+        disposition = _header_text(part.get("Content-Disposition")).lower()
         filename = part.get_filename()
         if "attachment" not in disposition and not filename:
             continue
@@ -389,7 +389,7 @@ def _attachments(message: Message) -> list[dict[str, Any]]:
                 "filename": _decode_header(filename or ""),
                 "mime_type": part.get_content_type(),
                 "size_bytes": len(payload),
-                "content_id": (part.get("Content-ID") or "").strip("<>") or None,
+                "content_id": _header_text(part.get("Content-ID")).strip("<>") or None,
                 "disposition": disposition.split(";", 1)[0] or "attachment",
             }
         )
@@ -455,6 +455,10 @@ def _decode_header(value: str) -> str:
     return str(make_header(decode_header(value)))
 
 
+def _header_text(value: Any) -> str:
+    return str(value) if value is not None else ""
+
+
 def _addresses(value: str) -> list[dict[str, str]]:
     return [{"name": _decode_header(name), "email": address} for name, address in getaddresses([value]) if address]
 
@@ -477,7 +481,7 @@ def _message_date(message: Message, internal_date: Any) -> str:
 
 
 def _has_attachments(message: Message) -> bool:
-    return any((part.get("Content-Disposition") or "").lower().startswith("attachment") for part in message.walk())
+    return any(_header_text(part.get("Content-Disposition")).lower().startswith("attachment") for part in message.walk())
 
 
 def _references(value: str) -> list[str]:
@@ -509,7 +513,7 @@ def _mailbox_id(name: str) -> str:
 
 
 def _message_id(mailbox_id: str, uid: int, message_id: str | None) -> str:
-    source = f"{mailbox_id}:{uid}:{message_id or ''}"
+    source = f"{mailbox_id}:{uid}"
     digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:24]
     return f"mail_msg_{digest}"
 

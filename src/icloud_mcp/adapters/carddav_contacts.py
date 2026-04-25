@@ -321,9 +321,8 @@ def _contact_from_vcard(addressbook_id: str, href: str, raw_vcard: str, etag: st
     name = card.contents.get("n", [None])[0]
     given_name = getattr(getattr(name, "value", None), "given", None) if name else None
     family_name = getattr(getattr(name, "value", None), "family", None) if name else None
-    contact_source = uid or href
     return SyncedContact(
-        id=f"contact_{hashlib.sha256(contact_source.encode('utf-8')).hexdigest()[:24]}",
+        id=f"contact_{hashlib.sha256((addressbook_id + href).encode('utf-8')).hexdigest()[:24]}",
         addressbook_id=addressbook_id,
         href=href,
         etag=etag,

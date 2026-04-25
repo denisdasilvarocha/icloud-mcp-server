@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 from email import message_from_bytes
+from email.header import Header
+from email.message import Message
 
 from icalendar import Calendar
 
@@ -94,6 +96,26 @@ agenda
         self.assertEqual(parsed.attachments[0]["filename"], "agenda.txt")
         self.assertEqual(parsed.calendar_invites[0]["uid"], "invite-1")
 
+    def test_imap_message_parser_handles_non_string_attachment_disposition(self) -> None:
+        message = Message()
+        message._headers.append(("Content-Type", 'multipart/mixed; boundary="b"'))
+        part = Message()
+        part._headers.append(("Content-Disposition", Header('attachment; filename="agenda.txt"', "utf-8")))
+        part._headers.append(("Content-Type", "text/plain"))
+        part.set_payload("agenda")
+        message.set_payload([part])
+
+        parsed = _message_from_email(
+            mailbox_id="mb_inbox",
+            uid=3,
+            message=message,
+            flags=(),
+            size_bytes=0,
+            internal_date=None,
+        )
+
+        self.assertEqual(parsed.attachments[0]["filename"], "agenda.txt")
+
     def test_imap_message_parser_skips_encrypted_body_text(self) -> None:
         raw = b"""From: Liesa <liesa@example.com>
 To: Me <me@example.com>
@@ -119,9 +141,11 @@ encrypted payload that should not be indexed
 
     def test_imap_stable_id_includes_mailbox_and_uid(self) -> None:
         first = _message_id("mb_inbox", 1, "<shared@example.com>")
+        same_uid_changed_header = _message_id("mb_inbox", 1, "<changed@example.com>")
         duplicate_in_archive = _message_id("mb_archive", 1, "<shared@example.com>")
         duplicate_in_mailbox = _message_id("mb_inbox", 2, "<shared@example.com>")
 
+        self.assertEqual(first, same_uid_changed_header)
         self.assertNotEqual(first, duplicate_in_archive)
         self.assertNotEqual(first, duplicate_in_mailbox)
 

@@ -175,10 +175,13 @@ class CoverageEdgesTests(unittest.TestCase):
                 days=1,
                 limit_per_mailbox=2,
             )
+            bounded_first_sync = imap_mail._incremental_uids(adapter.client, {}, since=date(2026, 4, 1))
         self.assertEqual(mailboxes[0].name, "INBOX")
         self.assertEqual(messages[0].subject, "Recent")
         self.assertEqual(delta.deleted[0].uid, 4)
         self.assertEqual([message.uid for message in empty_cache_delta.messages], [1, 2])
+        self.assertEqual(bounded_first_sync, [1, 2])
+        self.assertIn(["SINCE", date(2026, 4, 1)], adapter.client.searches)
         self.assertEqual(mailbox.backfill_status, "complete")
         self.assertGreaterEqual(len(older), 1)
         self.assertEqual(imap_mail._decode_header(""), "")
@@ -1252,6 +1255,7 @@ class _FakeIMAPAdapter(imap_mail.IMAPMailAdapter):
 class _FakeIMAPClient:
     def __init__(self, uid_validity: bytes = b"1") -> None:
         self.uid_validity = uid_validity
+        self.searches: list[list[object]] = []
 
     def __enter__(self) -> _FakeIMAPClient:
         return self
@@ -1269,6 +1273,7 @@ class _FakeIMAPClient:
         return {b"UIDVALIDITY": self.uid_validity, b"UIDNEXT": 4, b"HIGHESTMODSEQ": b"2", b"EXISTS": 2}
 
     def search(self, criteria: list[object]) -> list[int]:
+        self.searches.append(criteria)
         if criteria and criteria[0] == "UID":
             return [2]
         if criteria and criteria[0] == "MODSEQ":

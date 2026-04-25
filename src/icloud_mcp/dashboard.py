@@ -203,6 +203,22 @@ DASHBOARD_HTML = r"""<html lang="en"><head>
         <span class="text-slate-500 text-sm">${escapeHtml(label)}</span>
         <span class="font-normal text-slate-900 text-sm text-right">${escapeHtml(text(value))}</span>
       </li>`;
+    const progressBar = (worker) => {
+      const status = worker.status ? worker.status.toLowerCase() : "";
+      const label = text(worker.progress_cursor, status || "idle");
+      let bar = { width: "20%", color: "bg-slate-300", track: "bg-slate-100", pulse: "" };
+      if (status === "ok") bar = { width: "100%", color: "bg-emerald-500", track: "bg-emerald-100", pulse: "" };
+      if (status === "running") bar = { width: "55%", color: "bg-emerald-500", track: "bg-emerald-100", pulse: " animate-pulse" };
+      if (status === "skipped" || status === "idle") bar = { width: "12%", color: "bg-slate-300", track: "bg-slate-100", pulse: "" };
+      if (status === "backoff") bar = { width: "25%", color: "bg-amber-500", track: "bg-amber-100", pulse: "" };
+      if (status === "error" || status === "dead_letter") bar = { width: "18%", color: "bg-red-500", track: "bg-red-100", pulse: "" };
+      return `
+        <div class="w-28" title="${escapeHtml(label)}">
+          <div class="h-1.5 rounded-full ${bar.track} overflow-hidden">
+            <div class="h-full rounded-full ${bar.color}${bar.pulse}" style="width: ${bar.width}"></div>
+          </div>
+        </div>`;
+    };
 
     async function loadStatus() {
       const response = await fetch("/api/status", { cache: "no-store" });
@@ -255,7 +271,7 @@ DASHBOARD_HTML = r"""<html lang="en"><head>
           </td>
           <td class="px-5 py-3 text-sm text-slate-500">${escapeHtml(when(worker.last_sync_at, "Never"))}</td>
           <td class="px-5 py-3 text-sm text-slate-500">${escapeHtml(worker.retry_count || 0)}</td>
-          <td class="px-5 py-3 text-xs text-slate-400 font-mono">${escapeHtml(text(worker.progress_cursor, "N/A"))}</td>
+          <td class="px-5 py-3">${progressBar(worker)}</td>
         </tr>
       `}).join("");
 

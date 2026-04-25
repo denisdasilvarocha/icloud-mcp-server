@@ -11,6 +11,7 @@ from typing import Any
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
+from icloud_mcp.db.repositories import cleanup_local_index
 from icloud_mcp.indexing.embeddings import EmbeddingWorker
 from icloud_mcp.observability.metrics import record_metric
 from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
@@ -98,7 +99,13 @@ class SyncScheduler:
             update_checkpoint(self.db, "indexer_worker", "ok", {"mode": "inline_fts"})
             results["embedding_worker"] = EmbeddingWorker(self.db).run_once()
             self.db.execute("DELETE FROM query_cache WHERE expires_at < datetime('now')")
-            update_checkpoint(self.db, "maintenance_worker", "ok", {"expired_query_cache_removed": True})
+            cleanup = cleanup_local_index(self.db)
+            update_checkpoint(
+                self.db,
+                "maintenance_worker",
+                "ok",
+                {"expired_query_cache_removed": True, **cleanup},
+            )
             return results
         finally:
             self._mark_cycle_finished()

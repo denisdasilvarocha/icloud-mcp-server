@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 from icloud_mcp.config import Settings
-from icloud_mcp.dashboard import DashboardRuntime, _health, _make_handler, localhost_port_available
+from icloud_mcp.dashboard import DashboardRuntime, _dashboard_html, _health, _make_handler, localhost_port_available
 from icloud_mcp.db.connection import open_db
 from icloud_mcp.db.repositories import ensure_defaults
 from icloud_mcp.server import create_server
@@ -182,6 +182,12 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(_health({"freshness_status": {}, "workers": {"x": {"status": "running"}}})["status"], "syncing")
         self.assertEqual(_health({"freshness_status": {"mail": {"status": "stale"}}, "workers": {}})["status"], "degraded")
         self.assertEqual(_health({"freshness_status": {"mail": {"status": "healthy"}}, "workers": {}})["status"], "healthy")
+
+    def test_dashboard_renders_worker_progress_bar(self) -> None:
+        html = _dashboard_html()
+
+        self.assertIn("const progressBar = (worker)", html)
+        self.assertNotIn('text(worker.progress_cursor, "N/A")', html)
 
 
 class _FakeScheduler:

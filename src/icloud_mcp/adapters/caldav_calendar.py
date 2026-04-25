@@ -285,7 +285,7 @@ def _synced_event(calendar_id: str, event: Any, raw_ics: str) -> SyncedCalendarE
     uid = parsed["uid"] or _uid_from_ics(raw_ics)
     href = str(getattr(event, "url", ""))
     return SyncedCalendarEvent(
-        id=f"cal_evt_{hashlib.sha256((calendar_id + href + uid).encode('utf-8')).hexdigest()[:24]}",
+        id=f"cal_evt_{hashlib.sha256((calendar_id + href).encode('utf-8')).hexdigest()[:24]}",
         calendar_id=calendar_id,
         href=href,
         uid=uid,
