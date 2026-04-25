@@ -6,9 +6,9 @@ import random
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from icloud_mcp.db.connection import Database
-from icloud_mcp.security.redaction import redact_text
-from icloud_mcp.util import compact_json, utc_now
+from icloud_mcp.platform.redaction import redact_text
+from icloud_mcp.platform.util import compact_json, utc_now
+from icloud_mcp.storage.connection import Database
 
 MAX_RETRIES = 5
 BASE_BACKOFF_SECONDS = 60

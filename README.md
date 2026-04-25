@@ -148,10 +148,11 @@ Sync scheduler
 
 Key paths:
 
-- `src/icloud_mcp/server.py` - server composition, resources, and prompt registration.
-- `src/icloud_mcp/tools/` - MCP tool registration.
-- `src/icloud_mcp/services/search.py` - local search orchestration.
-- `src/icloud_mcp/db/` - SQLite schema, migrations, and repositories.
-- `src/icloud_mcp/sync/` - background/manual sync workers and checkpoints.
-- `src/icloud_mcp/adapters/` - IMAP, CalDAV, CardDAV, and DAV XML protocol code.
-- `src/icloud_mcp/security/` - credential loading and redaction.
+- `src/icloud_mcp/mcp/` - server composition, resources, prompt registration, and MCP boundary helpers.
+- `src/icloud_mcp/mail/` - Mail Cache tools, cache persistence, IMAP adapter, and sync worker.
+- `src/icloud_mcp/calendar/` - Calendar Cache tools, cache persistence, CalDAV adapter, writes, and sync worker.
+- `src/icloud_mcp/contacts/` - Contact Cache tools, cache persistence, CardDAV adapter, and sync worker.
+- `src/icloud_mcp/search/` - Search Index orchestration, query policy, FTS/vector indexing, and maintenance.
+- `src/icloud_mcp/sync/` - scheduler, checkpoints, delta-first helpers, and sync MCP tools.
+- `src/icloud_mcp/storage/` - SQLite connection, schema, and migrations.
+- `src/icloud_mcp/platform/` - configuration, credentials, redaction, metrics, audit, and shared utilities.

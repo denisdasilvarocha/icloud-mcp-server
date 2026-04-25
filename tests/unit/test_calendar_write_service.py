@@ -4,13 +4,13 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from icloud_mcp.adapters import caldav_calendar as caldav
-from icloud_mcp.config import Settings
-from icloud_mcp.db.cache_state import ensure_defaults
-from icloud_mcp.db.calendar_repository import build_ics
-from icloud_mcp.db.connection import open_db
-from icloud_mcp.security.secrets import ICloudCredentials
-from icloud_mcp.services.calendar_write import CalendarWriteService
+from icloud_mcp.calendar import adapter as caldav
+from icloud_mcp.calendar.cache import build_ics
+from icloud_mcp.calendar.write import CalendarWriteService
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.platform.secrets import ICloudCredentials
+from icloud_mcp.storage.cache_state import ensure_defaults
+from icloud_mcp.storage.connection import open_db
 
 
 class CalendarWriteServiceTests(unittest.TestCase):
@@ -59,9 +59,9 @@ class CalendarWriteServiceTests(unittest.TestCase):
 
         with (
             patch(
-                "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
             ),
-            patch("icloud_mcp.services.calendar_write.CalDAVCalendarAdapter", return_value=adapter),
+            patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=adapter),
         ):
             first = service.create_event(input_data)
             second = service.create_event(input_data)

@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
-from icloud_mcp.db.connection import Database
+from icloud_mcp.storage.connection import Database
 
 CollectionT = TypeVar("CollectionT")
 ItemT = TypeVar("ItemT")

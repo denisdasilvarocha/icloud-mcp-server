@@ -5,11 +5,11 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Protocol, TypeGuard, runtime_checkable
 
-from icloud_mcp.adapters.caldav_calendar import SyncedCalendar, SyncedCalendarEvent
-from icloud_mcp.adapters.caldav_calendar import WebDAVSyncResult as CalendarSyncResult
-from icloud_mcp.adapters.carddav_contacts import SyncedAddressBook, SyncedContact
-from icloud_mcp.adapters.carddav_contacts import WebDAVSyncResult as ContactSyncResult
-from icloud_mcp.adapters.imap_mail import IMAPSyncDelta
+from icloud_mcp.calendar.adapter import SyncedCalendar, SyncedCalendarEvent
+from icloud_mcp.calendar.adapter import WebDAVSyncResult as CalendarSyncResult
+from icloud_mcp.contacts.adapter import SyncedAddressBook, SyncedContact
+from icloud_mcp.contacts.adapter import WebDAVSyncResult as ContactSyncResult
+from icloud_mcp.mail.adapter import IMAPSyncDelta
 
 
 @runtime_checkable

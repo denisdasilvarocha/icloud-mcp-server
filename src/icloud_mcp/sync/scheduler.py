@@ -9,12 +9,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from icloud_mcp.config import Settings
-from icloud_mcp.db.connection import Database
-from icloud_mcp.db.maintenance_repository import cleanup_local_index
-from icloud_mcp.indexing.embeddings import EmbeddingWorker
-from icloud_mcp.observability.metrics import record_metric
-from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
+from icloud_mcp.calendar.sync import CalendarSyncWorker
+from icloud_mcp.contacts.sync import ContactsSyncWorker
+from icloud_mcp.mail.sync import MailBackfillWorker, MailSyncWorker
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.platform.metrics import record_metric
+from icloud_mcp.search.embeddings import EmbeddingWorker
+from icloud_mcp.search.maintenance import cleanup_local_index
+from icloud_mcp.storage.connection import Database
 from icloud_mcp.sync.checkpoints import (
     MAX_RETRIES,
     initialize_checkpoints,
@@ -23,8 +25,6 @@ from icloud_mcp.sync.checkpoints import (
     update_worker_result_checkpoint,
     update_worker_start_checkpoint,
 )
-from icloud_mcp.sync.contacts_sync import ContactsSyncWorker
-from icloud_mcp.sync.mail_sync import MailBackfillWorker, MailSyncWorker
 
 LOGGER = logging.getLogger(__name__)
 WORKERS = [

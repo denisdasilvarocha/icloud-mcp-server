@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from icloud_mcp.config import Settings
-from icloud_mcp.db.cache_state import ensure_defaults, index_generation, sync_status
-from icloud_mcp.db.calendar_repository import (
+from icloud_mcp.calendar.cache import (
     create_calendar_event,
     list_events,
     update_calendar_event,
@@ -14,24 +12,26 @@ from icloud_mcp.db.calendar_repository import (
     validate_event_input,
     validate_event_patch,
 )
-from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.contacts_repository import (
+from icloud_mcp.calendar.schemas import UpdateEventInput
+from icloud_mcp.calendar.tools import register_calendar_tools
+from icloud_mcp.contacts.cache import (
     list_contacts,
     search_contacts,
     tombstone_contact,
     upsert_contact,
 )
-from icloud_mcp.db.mail_repository import list_mail, upsert_mail_message, upsert_mailbox, view_mail
-from icloud_mcp.db.maintenance_repository import cleanup_local_index
-from icloud_mcp.db.query_cache import query_cache_get, query_cache_set
-from icloud_mcp.db.search_repository import search_documents
-from icloud_mcp.indexing.embeddings import EmbeddingWorker
-from icloud_mcp.indexing.query_planner import plan_query
-from icloud_mcp.schemas.calendar import UpdateEventInput
-from icloud_mcp.security.redaction import redact_text
-from icloud_mcp.server import register_resources_and_prompts
-from icloud_mcp.tools.calendar_tools import register_calendar_tools
-from icloud_mcp.util import decode_cursor
+from icloud_mcp.mail.cache import list_mail, upsert_mail_message, upsert_mailbox, view_mail
+from icloud_mcp.mcp.server import register_resources_and_prompts
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.platform.redaction import redact_text
+from icloud_mcp.platform.util import decode_cursor
+from icloud_mcp.search.embeddings import EmbeddingWorker
+from icloud_mcp.search.maintenance import cleanup_local_index
+from icloud_mcp.search.query_cache import query_cache_get, query_cache_set
+from icloud_mcp.search.query_planner import plan_query
+from icloud_mcp.search.repository import search_documents
+from icloud_mcp.storage.cache_state import ensure_defaults, index_generation, sync_status
+from icloud_mcp.storage.connection import open_db
 
 
 class LocalMVPTests(unittest.TestCase):

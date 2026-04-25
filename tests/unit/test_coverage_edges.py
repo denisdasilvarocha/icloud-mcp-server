@@ -13,50 +13,54 @@ from unittest.mock import patch
 
 from defusedxml import ElementTree
 
-from icloud_mcp.adapters import caldav_calendar as caldav
-from icloud_mcp.adapters import carddav_contacts as carddav
-from icloud_mcp.adapters import imap_mail
-from icloud_mcp.config import Settings
-from icloud_mcp.db import cache_state, calendar_repository, contacts_repository, mail_repository, search_repository
-from icloud_mcp.db.cache_state import ensure_defaults
-from icloud_mcp.db.calendar_repository import (
+from icloud_mcp.calendar import adapter as caldav
+from icloud_mcp.calendar import cache as calendar_repository
+from icloud_mcp.calendar.cache import (
     build_ics,
     create_calendar_event,
     update_calendar_event,
     upsert_calendar_collection,
     view_event,
 )
-from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.contacts_repository import upsert_addressbook, upsert_contact
-from icloud_mcp.db.mail_repository import upsert_mail_message, upsert_mailbox, view_mail
-from icloud_mcp.indexing.chunker import chunk_text
-from icloud_mcp.indexing.query_planner import plan_query
-from icloud_mcp.observability.metrics import metrics_snapshot, record_metric
-from icloud_mcp.schemas.calendar import CreateEventInput, UpdateEventInput
-from icloud_mcp.schemas.contacts import ContactSummary
-from icloud_mcp.schemas.mail import MailAddress
-from icloud_mcp.schemas.search import SearchResultRow
-from icloud_mcp.security.redaction import redact_secret, redact_text
-from icloud_mcp.security.secrets import ICloudCredentials, load_icloud_credentials, store_icloud_credentials
-from icloud_mcp.server import main, register_resources_and_prompts
-from icloud_mcp.services.search import SearchService, _external_domains, _refresh_status, answer_hints
-from icloud_mcp.services.search_policy import resolve_search_policy
-from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
-from icloud_mcp.sync.contacts_sync import ContactsSyncWorker
-from icloud_mcp.sync.mail_sync import MailBackfillWorker, MailSyncWorker
-from icloud_mcp.tools.boundary import (
+from icloud_mcp.calendar.schemas import CreateEventInput, UpdateEventInput
+from icloud_mcp.calendar.sync import CalendarSyncWorker
+from icloud_mcp.calendar.tools import _write_exception_status, register_calendar_tools
+from icloud_mcp.contacts import adapter as carddav
+from icloud_mcp.contacts import cache as contacts_repository
+from icloud_mcp.contacts.cache import upsert_addressbook, upsert_contact
+from icloud_mcp.contacts.schemas import ContactSummary
+from icloud_mcp.contacts.sync import ContactsSyncWorker
+from icloud_mcp.contacts.tools import register_contact_tools
+from icloud_mcp.mail import adapter as imap_mail
+from icloud_mcp.mail import cache as mail_repository
+from icloud_mcp.mail.cache import upsert_mail_message, upsert_mailbox, view_mail
+from icloud_mcp.mail.schemas import MailAddress
+from icloud_mcp.mail.sync import MailBackfillWorker, MailSyncWorker
+from icloud_mcp.mail.tools import register_mail_tools
+from icloud_mcp.mcp.boundary import (
     bounded_int,
     cursor_offset,
     decode_cursor_or_error,
     minimum_int,
     not_found,
 )
-from icloud_mcp.tools.calendar_tools import _write_exception_status, register_calendar_tools
-from icloud_mcp.tools.contact_tools import register_contact_tools
-from icloud_mcp.tools.mail_tools import register_mail_tools
-from icloud_mcp.tools.search_tools import register_search_tools
-from icloud_mcp.tools.sync_tools import register_sync_tools
-from icloud_mcp.util import cursor_error, decode_cursor, encode_cursor, next_cursor
+from icloud_mcp.mcp.server import main, register_resources_and_prompts
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.platform.metrics import metrics_snapshot, record_metric
+from icloud_mcp.platform.redaction import redact_secret, redact_text
+from icloud_mcp.platform.secrets import ICloudCredentials, load_icloud_credentials, store_icloud_credentials
+from icloud_mcp.platform.util import cursor_error, decode_cursor, encode_cursor, next_cursor
+from icloud_mcp.search import repository as search_repository
+from icloud_mcp.search.chunker import chunk_text
+from icloud_mcp.search.policy import resolve_search_policy
+from icloud_mcp.search.query_planner import plan_query
+from icloud_mcp.search.schemas import SearchResultRow
+from icloud_mcp.search.service import SearchService, _external_domains, _refresh_status, answer_hints
+from icloud_mcp.search.tools import register_search_tools
+from icloud_mcp.storage import cache_state
+from icloud_mcp.storage.cache_state import ensure_defaults
+from icloud_mcp.storage.connection import open_db
+from icloud_mcp.sync.tools import register_sync_tools
 
 repo = SimpleNamespace()
 for _repository_module in (cache_state, calendar_repository, contacts_repository, mail_repository, search_repository):
@@ -75,7 +79,7 @@ class CoverageEdgesTests(unittest.TestCase):
         self.db.close()
 
     def test_small_value_modules_and_util_edges(self) -> None:
-        importlib.import_module("icloud_mcp.db.models")
+        importlib.import_module("icloud_mcp.storage.models")
         self.assertEqual(MailAddress("A", "a@example.com").email, "a@example.com")
         self.assertEqual(ContactSummary("c", "Name", ["n@example.com"]).display_name, "Name")
         self.assertEqual(SearchResultRow("id", "mail", "T", "S", 0.5).score, 0.5)
@@ -118,7 +122,7 @@ class CoverageEdgesTests(unittest.TestCase):
         }
         with (
             patch.dict("os.environ", env, clear=True),
-            patch("icloud_mcp.security.secrets._read_keychain_password", return_value="app-pass") as read,
+            patch("icloud_mcp.platform.secrets._read_keychain_password", return_value="app-pass") as read,
         ):
             settings = Settings.from_env()
             credentials = load_icloud_credentials(settings)
@@ -154,11 +158,11 @@ class CoverageEdgesTests(unittest.TestCase):
         with patch.dict("sys.modules", {"keyring": keyring}):
             store_icloud_credentials("person@example.com", "pw")
         with patch.dict("sys.modules", {"keyring": object()}):
-            self.assertIsNone(importlib.import_module("icloud_mcp.security.secrets")._read_keychain_password("x"))
+            self.assertIsNone(importlib.import_module("icloud_mcp.platform.secrets")._read_keychain_password("x"))
 
-        importlib.import_module("icloud_mcp.observability.logging").configure_logging(logging.DEBUG)
-        importlib.import_module("icloud_mcp.adapters.dav_xml").parse_xml("<root/>")
-        importlib.import_module("icloud_mcp.indexing.fts")
+        importlib.import_module("icloud_mcp.platform.logging").configure_logging(logging.DEBUG)
+        importlib.import_module("icloud_mcp.platform.dav_xml").parse_xml("<root/>")
+        importlib.import_module("icloud_mcp.search.fts")
         record_metric(self.db, "x", 1.25, {"a": "b"})
         record_metric(self.db, "y", 1.0)
         record_metric(self.db, "y", 1.0)
@@ -381,14 +385,14 @@ class CoverageEdgesTests(unittest.TestCase):
         adapter = carddav.CardDAVContactsAdapter()
         self.assertTrue(adapter.configured("a", "b"))
         fake_client = _FakeCardDAVClient()
-        with patch("icloud_mcp.adapters.carddav_contacts.httpx.Client", return_value=fake_client):
+        with patch("icloud_mcp.contacts.adapter.httpx.Client", return_value=fake_client):
             books, contacts = adapter.sync_contacts(apple_id="a", app_password="b")
         self.assertEqual(books[0].display_name, "Contacts")
         self.assertEqual(contacts[0].display_name, "Liesa")
-        with patch("icloud_mcp.adapters.carddav_contacts.httpx.Client", return_value=_FakeCardDAVClient()):
+        with patch("icloud_mcp.contacts.adapter.httpx.Client", return_value=_FakeCardDAVClient()):
             discovered = adapter.discover_addressbooks(apple_id="a", app_password="b")
         self.assertEqual(discovered[0].ctag, "ctag")
-        with patch("icloud_mcp.adapters.carddav_contacts.httpx.Client", return_value=_FakeCardDAVClient()):
+        with patch("icloud_mcp.contacts.adapter.httpx.Client", return_value=_FakeCardDAVClient()):
             result, changed = adapter.sync_contact_changes(
                 apple_id="a", app_password="b", addressbook=discovered[0], sync_token="sync"
             )
@@ -472,7 +476,7 @@ class CoverageEdgesTests(unittest.TestCase):
             asyncio.run(mcp.tools["icloud.calendar.view_event"](created["event_id"]))["id"], created["event_id"]
         )
         self.assertIn("workers", asyncio.run(mcp.tools["icloud.sync.status"]()))
-        with patch("icloud_mcp.tools.sync_tools.SyncScheduler") as scheduler:
+        with patch("icloud_mcp.sync.tools.SyncScheduler") as scheduler:
             scheduler.return_value.sync_now.return_value = {"worker": {"status": "ok"}}
             self.assertIn("results", asyncio.run(mcp.tools["icloud.sync.now"]()))
         self.assertIn("totals", asyncio.run(mcp.tools["icloud.metrics.snapshot"](limit=1000)))
@@ -490,20 +494,20 @@ class CoverageEdgesTests(unittest.TestCase):
         )
         fake_mcp = SimpleNamespace(run=lambda transport: None)
         with (
-            patch("icloud_mcp.server.Settings.from_env", return_value=self.settings),
-            patch("icloud_mcp.server.open_db", return_value=self.db),
-            patch("icloud_mcp.server.SyncScheduler") as scheduler,
-            patch("icloud_mcp.server.create_server", return_value=fake_mcp),
+            patch("icloud_mcp.mcp.server.Settings.from_env", return_value=self.settings),
+            patch("icloud_mcp.mcp.server.open_db", return_value=self.db),
+            patch("icloud_mcp.mcp.server.SyncScheduler") as scheduler,
+            patch("icloud_mcp.mcp.server.create_server", return_value=fake_mcp),
         ):
             main()
         scheduler.return_value.start_background.assert_called_once()
         with (
-            patch("icloud_mcp.config.Settings.from_env", return_value=self.settings),
-            patch("icloud_mcp.db.connection.open_db", return_value=self.db),
+            patch("icloud_mcp.platform.config.Settings.from_env", return_value=self.settings),
+            patch("icloud_mcp.storage.connection.open_db", return_value=self.db),
             patch("icloud_mcp.sync.scheduler.SyncScheduler"),
             patch("fastmcp.FastMCP.run"),
         ):
-            runpy.run_module("icloud_mcp.server", run_name="__main__")
+            runpy.run_module("icloud_mcp.mcp.server", run_name="__main__")
 
     def test_calendar_write_tool_paths(self) -> None:
         mcp = _FakeMCP()
@@ -546,19 +550,19 @@ class CoverageEdgesTests(unittest.TestCase):
         fake_adapter = SimpleNamespace(discover=lambda **kwargs: [remote_calendar], create_event=create_remote)
         with (
             patch(
-                "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
             ),
             patch(
-                "icloud_mcp.services.calendar_write.CalDAVCalendarAdapter",
+                "icloud_mcp.calendar.write.CalDAVCalendarAdapter",
                 return_value=SimpleNamespace(discover=lambda **kwargs: [], create_event=create_remote),
             ),
         ):
             self.assertEqual(asyncio.run(mcp.tools["icloud.calendar.create_event"](valid))["status"], "sync_required")
         with (
             patch(
-                "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
             ),
-            patch("icloud_mcp.services.calendar_write.CalDAVCalendarAdapter", return_value=fake_adapter),
+            patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=fake_adapter),
         ):
             created = asyncio.run(mcp.tools["icloud.calendar.create_event"](valid))
             duplicate = asyncio.run(
@@ -591,9 +595,9 @@ class CoverageEdgesTests(unittest.TestCase):
         )
         with (
             patch(
-                "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
             ),
-            patch("icloud_mcp.services.calendar_write.CalDAVCalendarAdapter", return_value=raising_adapter),
+            patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=raising_adapter),
         ):
             self.assertEqual(
                 asyncio.run(mcp.tools["icloud.calendar.create_event"](valid))["status"], "connectivity_error"
@@ -607,9 +611,9 @@ class CoverageEdgesTests(unittest.TestCase):
         update_adapter = SimpleNamespace(update_event=lambda **kwargs: remote_update)
         with (
             patch(
-                "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
             ),
-            patch("icloud_mcp.services.calendar_write.CalDAVCalendarAdapter", return_value=update_adapter),
+            patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=update_adapter),
         ):
             updated = asyncio.run(
                 mcp.tools["icloud.calendar.update_event"](
@@ -652,7 +656,7 @@ class CoverageEdgesTests(unittest.TestCase):
             "credential_missing",
         )
         with patch(
-            "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+            "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
         ):
             self.assertEqual(
                 asyncio.run(
@@ -682,7 +686,7 @@ class CoverageEdgesTests(unittest.TestCase):
         )
         self.db.execute("UPDATE calendar_objects SET etag = NULL WHERE id = ?", (no_etag["event_id"],))
         with patch(
-            "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+            "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
         ):
             self.assertEqual(
                 asyncio.run(
@@ -692,7 +696,7 @@ class CoverageEdgesTests(unittest.TestCase):
                 )["status"],
                 "conflict",
             )
-        from icloud_mcp.tools import calendar_tools as calendar_tool_module
+        from icloud_mcp.calendar import tools as calendar_tool_module
 
         self.assertIn("Patched", calendar_tool_module._patched_ics(current, {"title": "Patched"}))
         self.assertEqual(
@@ -704,7 +708,7 @@ class CoverageEdgesTests(unittest.TestCase):
         )
         discover_adapter = SimpleNamespace(discover=lambda **kwargs: [new_remote])
         with patch(
-            "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+            "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
         ):
             self.assertEqual(
                 calendar_tool_module._calendar_for_write(self.db, self.settings, discover_adapter, "cal_discovered")[
@@ -712,14 +716,14 @@ class CoverageEdgesTests(unittest.TestCase):
                 ],
                 "cal_discovered",
             )
-        with patch("icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=None):
+        with patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=None):
             self.assertIsNone(calendar_tool_module._calendar_for_write(self.db, self.settings, fake_adapter, "missing"))
         remote_dict_adapter = SimpleNamespace(update_event=lambda **kwargs: {"status": "conflict"})
         with (
             patch(
-                "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
             ),
-            patch("icloud_mcp.services.calendar_write.CalDAVCalendarAdapter", return_value=remote_dict_adapter),
+            patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=remote_dict_adapter),
         ):
             self.assertEqual(
                 asyncio.run(
@@ -734,9 +738,9 @@ class CoverageEdgesTests(unittest.TestCase):
         )
         with (
             patch(
-                "icloud_mcp.services.calendar_write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
+                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
             ),
-            patch("icloud_mcp.services.calendar_write.CalDAVCalendarAdapter", return_value=remote_raising_adapter),
+            patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=remote_raising_adapter),
         ):
             self.assertEqual(
                 asyncio.run(
@@ -796,8 +800,8 @@ class CoverageEdgesTests(unittest.TestCase):
             },
         ]
         with (
-            patch("icloud_mcp.db.search_repository._add_semantic_results", return_value=fake_rows),
-            patch("icloud_mcp.db.search_repository._rerank_rows", side_effect=lambda value: value),
+            patch("icloud_mcp.search.repository._add_semantic_results", return_value=fake_rows),
+            patch("icloud_mcp.search.repository._rerank_rows", side_effect=lambda value: value),
         ):
             self.assertEqual(
                 repo.search_documents(self.db, query="", domains=["mail"], limit=2, offset=0, snippet_chars=20)[0][
@@ -806,13 +810,13 @@ class CoverageEdgesTests(unittest.TestCase):
                 1.0,
             )
         with (
-            patch("icloud_mcp.db.search_repository._add_semantic_results", return_value=[fake_rows[0]]),
-            patch("icloud_mcp.db.search_repository._rerank_rows", side_effect=lambda value: value),
+            patch("icloud_mcp.search.repository._add_semantic_results", return_value=[fake_rows[0]]),
+            patch("icloud_mcp.search.repository._rerank_rows", side_effect=lambda value: value),
         ):
             self.assertEqual(
                 len(repo.search_documents(self.db, query="", domains=["mail"], limit=1, offset=0, snippet_chars=20)), 1
             )
-        with patch("icloud_mcp.db.search_repository.query_similar_chunks", return_value=[]):
+        with patch("icloud_mcp.search.repository.query_similar_chunks", return_value=[]):
             self.assertEqual(
                 repo._add_semantic_results(_SemanticFallbackDb(), query="meeting", domains=["mail"], rows=[], limit=2)[
                     0
@@ -826,7 +830,7 @@ class CoverageEdgesTests(unittest.TestCase):
             full_rows,
         )
         with patch(
-            "icloud_mcp.db.search_repository.query_similar_chunks",
+            "icloud_mcp.search.repository.query_similar_chunks",
             return_value=[{"chunk_id": "chunk", "distance": 0.2}],
         ):
             self.assertEqual(
@@ -836,7 +840,7 @@ class CoverageEdgesTests(unittest.TestCase):
                 0.8,
             )
         with patch(
-            "icloud_mcp.db.search_repository.query_similar_chunks",
+            "icloud_mcp.search.repository.query_similar_chunks",
             return_value=[{"chunk_id": "chunk", "distance": 0.01}],
         ):
             self.assertEqual(
@@ -1135,7 +1139,7 @@ END:VCALENDAR
             {"id": "one", "document_id": "doc_one", "domain": "mail", "title": "One", "snippet": "one", "score": 1.0},
             {"id": "two", "document_id": "doc_two", "domain": "mail", "title": "Two", "snippet": "two", "score": 0.9},
         ]
-        with patch("icloud_mcp.services.search.search_documents", return_value=paged_rows):
+        with patch("icloud_mcp.search.service.search_documents", return_value=paged_rows):
             paged = SearchService(self.db, self.settings).search(
                 query="paged",
                 domains=["mail"],
@@ -1203,11 +1207,11 @@ END:VCALENDAR
         self.assertEqual(decode_cursor(second["next_cursor"], "new-secret")["offset"], 1)
 
     def test_vector_backend_edges_and_audit(self) -> None:
-        vector = importlib.import_module("icloud_mcp.indexing.vector")
-        backend = importlib.import_module("icloud_mcp.indexing.vector_backend")
+        vector = importlib.import_module("icloud_mcp.search.vector")
+        backend = importlib.import_module("icloud_mcp.search.vector_backend")
         self.assertEqual(vector.cosine_score("", "doc"), 0.0)
         self.assertGreater(vector.cosine_score("meeting", "appointment"), 0.0)
-        with patch("icloud_mcp.indexing.vector.Counter", side_effect=[{"x": 0}, {"x": 1}]):
+        with patch("icloud_mcp.search.vector.Counter", side_effect=[{"x": 0}, {"x": 1}]):
             self.assertEqual(vector.cosine_score("query", "document"), 0.0)
         self.assertEqual(vector.dense_embedding(""), [0.0] * vector.VECTOR_DIMENSIONS)
         self.assertEqual(vector.cosine_score_vectors({}, {"x": 1}), 0.0)
@@ -1215,20 +1219,20 @@ END:VCALENDAR
         self.assertEqual(vector.cosine_score_vectors({"x": 0}, {"x": 1}), 0.0)
         self.assertEqual(vector.cosine_score_vectors({"x": 1}, {"x": 0}), 0.0)
         fake = _FakeVectorDb()
-        with patch("icloud_mcp.indexing.vector_backend.sqlite_vec.load", side_effect=RuntimeError()):
+        with patch("icloud_mcp.search.vector_backend.sqlite_vec.load", side_effect=RuntimeError()):
             self.assertFalse(backend.ensure_vector_backend(fake))
-        with patch("icloud_mcp.indexing.vector_backend.ensure_vector_backend", return_value=False):
+        with patch("icloud_mcp.search.vector_backend.ensure_vector_backend", return_value=False):
             self.assertFalse(backend.upsert_chunk_vector(fake, "chunk", "text"))
             backend.delete_document_vectors(fake, "doc")
             self.assertEqual(backend.query_similar_chunks(fake, "query", 2), [])
         with (
-            patch("icloud_mcp.indexing.vector_backend.ensure_vector_backend", return_value=True),
-            patch("icloud_mcp.indexing.vector_backend.sqlite_vec.serialize_float32", return_value=b"vec"),
+            patch("icloud_mcp.search.vector_backend.ensure_vector_backend", return_value=True),
+            patch("icloud_mcp.search.vector_backend.sqlite_vec.serialize_float32", return_value=b"vec"),
         ):
             self.assertTrue(backend.upsert_chunk_vector(fake, "chunk", "text"))
             backend.delete_document_vectors(fake, "doc")
             self.assertEqual(backend.query_similar_chunks(fake, "query", 2), [{"chunk_id": "chunk", "distance": 0.1}])
-        importlib.import_module("icloud_mcp.observability.audit").audit_calendar_write(self.db, "event", "obj", "ok")
+        importlib.import_module("icloud_mcp.platform.audit").audit_calendar_write(self.db, "event", "obj", "ok")
 
     def test_adapter_direct_remaining_edges(self) -> None:
         with patch("caldav.DAVClient", return_value="client"):
@@ -1274,7 +1278,7 @@ END:VCALENDAR
             "<d:response><d:propstat><d:prop><d:resourcetype><card:addressbook/></d:resourcetype>"
             "</d:prop></d:propstat></d:response></d:multistatus>"
         )
-        with patch("icloud_mcp.adapters.carddav_contacts._propfind", return_value=root):
+        with patch("icloud_mcp.contacts.adapter._propfind", return_value=root):
             self.assertEqual(carddav.CardDAVContactsAdapter()._addressbooks(_FakeCardDAVClient(), "https://x/"), [])
 
         adapter = _FakeIMAPAdapter(_FakeIMAPClient(uid_validity=b"changed"))
@@ -1302,7 +1306,7 @@ END:VCALENDAR
         self.assertEqual(plain, ["raw"])
         bad_invite = message_from_bytes(b"Content-Type: text/calendar\n\nnot ics")
         self.assertEqual(imap_mail._calendar_invites(bad_invite), [])
-        with patch("icloud_mcp.adapters.imap_mail._part_text", return_value=""):
+        with patch("icloud_mcp.mail.adapter._part_text", return_value=""):
             self.assertEqual(imap_mail._calendar_invites(message_from_bytes(b"Content-Type: text/calendar\n\n")), [])
         no_payload = SimpleNamespace(
             get_payload=lambda decode=False: None if decode else "raw", get_content_charset=lambda: None
@@ -1374,7 +1378,7 @@ END:VCALENDAR
         self.assertEqual(events[0].calendar_id, calendar.id)
         self.assertEqual(len(synced), 1)
         self.assertEqual(
-            importlib.import_module("icloud_mcp.sync.calendar_sync")._absolute_member_url(calendar.url, "a.ics"),
+            importlib.import_module("icloud_mcp.calendar.sync")._absolute_member_url(calendar.url, "a.ics"),
             f"{calendar.url}a.ics",
         )
         stale_event = caldav.SyncedCalendarEvent(
@@ -1464,7 +1468,7 @@ END:VCALENDAR
         self.assertEqual(deleted_hrefs, [])
         self.assertEqual(len(synced_books), 1)
         self.assertEqual(
-            importlib.import_module("icloud_mcp.sync.contacts_sync")._absolute_member_url(book.url, "1.vcf"),
+            importlib.import_module("icloud_mcp.contacts.sync")._absolute_member_url(book.url, "1.vcf"),
             f"{book.url}1.vcf",
         )
         upsert_contact(
