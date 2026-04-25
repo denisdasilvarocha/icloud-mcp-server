@@ -6,12 +6,26 @@ import random
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from icloud_mcp.db.connection import Database
-from icloud_mcp.security.redaction import redact_text
-from icloud_mcp.util import compact_json, utc_now
+from icloud_mcp.platform.redaction import redact_text
+from icloud_mcp.platform.util import compact_json, utc_now
+from icloud_mcp.storage.connection import Database
 
 MAX_RETRIES = 5
 BASE_BACKOFF_SECONDS = 60
+
+
+def initialize_checkpoints(db: Database, names: list[str]) -> None:
+    """Ensure known sync workers have dashboard-visible checkpoints."""
+
+    for name in names:
+        db.execute(
+            """
+            INSERT INTO sync_checkpoints (name, status, last_sync_at, detail_json, retry_count)
+            VALUES (?, 'idle', NULL, ?, 0)
+            ON CONFLICT(name) DO NOTHING
+            """,
+            (name, compact_json({"mode": "ready"})),
+        )
 
 
 def update_checkpoint(db: Database, name: str, status: str, detail: dict | None = None) -> None:
@@ -71,9 +85,30 @@ def update_failure_checkpoint(
     return failure
 
 
+def update_worker_result_checkpoint(db: Database, name: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Record the final checkpoint for a worker result."""
+
+    if result.get("status") not in {"error", "dead_letter", "backoff"}:
+        result["retry_count"] = 0
+    update_checkpoint(db, name, _checkpoint_status(result.get("status")), result)
+    return result
+
+
+def update_worker_start_checkpoint(db: Database, name: str) -> None:
+    """Mark a worker as running through the scheduler lifecycle."""
+
+    update_checkpoint(db, name, "running", {"mode": "manual_or_background"})
+
+
 def _progress_cursor(detail: dict[str, Any]) -> str | None:
     value = detail.get("progress_cursor") or detail.get("cursor") or detail.get("last_synced_uid")
     return str(value) if value is not None else None
+
+
+def _checkpoint_status(status: object) -> str:
+    if status in {"skipped", "error", "dead_letter", "backoff"}:
+        return str(status)
+    return "ok"
 
 
 def _backoff_until(retry_count: int) -> str:

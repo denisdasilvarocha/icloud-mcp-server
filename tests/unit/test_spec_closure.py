@@ -8,9 +8,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from icloud_mcp.config import Settings
-from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.repositories import ensure_defaults, search_contacts, sync_status, upsert_contact
+from icloud_mcp.contacts.cache import search_contacts, upsert_contact
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.storage.cache_state import ensure_defaults, sync_status
+from icloud_mcp.storage.connection import open_db
 from icloud_mcp.sync.scheduler import SyncScheduler
 
 

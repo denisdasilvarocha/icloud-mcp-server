@@ -3,39 +3,35 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from icloud_mcp.config import Settings
-from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.repositories import (
-    cleanup_local_index,
+from icloud_mcp.calendar.cache import (
     create_calendar_event,
-    ensure_defaults,
-    index_generation,
-    list_contacts,
     list_events,
-    list_mail,
-    query_cache_get,
-    query_cache_set,
-    search_contacts,
-    search_documents,
-    sync_status,
-    tombstone_contact,
     update_calendar_event,
     upsert_calendar_collection,
     upsert_calendar_object,
-    upsert_contact,
-    upsert_mail_message,
-    upsert_mailbox,
     validate_event_input,
     validate_event_patch,
-    view_mail,
 )
-from icloud_mcp.indexing.embeddings import EmbeddingWorker
-from icloud_mcp.indexing.query_planner import plan_query
-from icloud_mcp.schemas.calendar import UpdateEventInput
-from icloud_mcp.security.redaction import redact_text
-from icloud_mcp.server import register_resources_and_prompts
-from icloud_mcp.tools.calendar_tools import register_calendar_tools
-from icloud_mcp.util import decode_cursor
+from icloud_mcp.calendar.schemas import UpdateEventInput
+from icloud_mcp.calendar.tools import register_calendar_tools
+from icloud_mcp.contacts.cache import (
+    list_contacts,
+    search_contacts,
+    tombstone_contact,
+    upsert_contact,
+)
+from icloud_mcp.mail.cache import list_mail, upsert_mail_message, upsert_mailbox, view_mail
+from icloud_mcp.mcp.server import register_resources_and_prompts
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.platform.redaction import redact_text
+from icloud_mcp.platform.util import decode_cursor
+from icloud_mcp.search.embeddings import EmbeddingWorker
+from icloud_mcp.search.maintenance import cleanup_local_index
+from icloud_mcp.search.query_cache import query_cache_get, query_cache_set
+from icloud_mcp.search.query_planner import plan_query
+from icloud_mcp.search.repository import search_documents
+from icloud_mcp.storage.cache_state import ensure_defaults, index_generation, sync_status
+from icloud_mcp.storage.connection import open_db
 
 
 class LocalMVPTests(unittest.TestCase):
@@ -184,9 +180,7 @@ class LocalMVPTests(unittest.TestCase):
 
         self.assertIn("start and end must both include timezone offsets or both omit them", errors)
 
-        patch_errors = validate_event_patch(
-            {"start": "2026-04-27T12:00:00+02:00", "end": "2026-04-27T13:00:00"}
-        )
+        patch_errors = validate_event_patch({"start": "2026-04-27T12:00:00+02:00", "end": "2026-04-27T13:00:00"})
         self.assertIn("start and end must both include timezone offsets or both omit them", patch_errors)
 
     def test_calendar_validation_rejects_offset_timezone_names(self) -> None:
@@ -327,7 +321,10 @@ class LocalMVPTests(unittest.TestCase):
         cleanup = cleanup_local_index(self.db)
 
         self.assertEqual(self.db.query_one("SELECT COUNT(*) AS value FROM mail_messages")["value"], 1)
-        self.assertEqual(self.db.query_one("SELECT id FROM mail_messages WHERE mailbox_id = ? AND uid = ?", ("mb_inbox", 1))["id"], "mail_msg_new")
+        self.assertEqual(
+            self.db.query_one("SELECT id FROM mail_messages WHERE mailbox_id = ? AND uid = ?", ("mb_inbox", 1))["id"],
+            "mail_msg_new",
+        )
         self.assertEqual(self.db.query_one("SELECT COUNT(*) AS value FROM contacts")["value"], 1)
         self.assertEqual(self.db.query_one("SELECT COUNT(*) AS value FROM calendar_objects")["value"], 1)
         self.assertEqual(self.db.query_one("SELECT COUNT(*) AS value FROM calendar_occurrences")["value"], 2)
@@ -527,7 +524,9 @@ class LocalMVPTests(unittest.TestCase):
         upsert_mail_message(self.db, **message, calendar_invites=[])
 
         self.assertEqual(
-            search_documents(self.db, query="Budget Review", domains=["mail_invite"], limit=5, offset=0, snippet_chars=300),
+            search_documents(
+                self.db, query="Budget Review", domains=["mail_invite"], limit=5, offset=0, snippet_chars=300
+            ),
             [],
         )
 
@@ -598,9 +597,7 @@ END:VCALENDAR
             offset=0,
             cursor_secret=self.settings.cursor_secret,
         )
-        old_starts = [
-            event["time"]["start"] for event in listed["events"] if event["id"] == created["event_id"]
-        ]
+        old_starts = [event["time"]["start"] for event in listed["events"] if event["id"] == created["event_id"]]
         future_events = [event for event in listed["events"] if event["id"] == result["event_id"]]
 
         self.assertEqual(result["scope"], "future")
@@ -627,7 +624,9 @@ END:VCALENDAR
             timezone="UTC",
         )
 
-        results = search_documents(self.db, query="Team Sync", domains=["calendar"], limit=2, offset=0, snippet_chars=300)
+        results = search_documents(
+            self.db, query="Team Sync", domains=["calendar"], limit=2, offset=0, snippet_chars=300
+        )
 
         self.assertEqual({result["id"] for result in results}, {recurring["event_id"], other["event_id"]})
 
@@ -754,7 +753,9 @@ END:VCALENDAR
         )
         EmbeddingWorker(self.db).run_once()
 
-        results = search_documents(self.db, query="zzqxjv-no-such-token", domains=["mail"], limit=5, offset=0, snippet_chars=300)
+        results = search_documents(
+            self.db, query="zzqxjv-no-such-token", domains=["mail"], limit=5, offset=0, snippet_chars=300
+        )
 
         self.assertEqual(results, [])
 

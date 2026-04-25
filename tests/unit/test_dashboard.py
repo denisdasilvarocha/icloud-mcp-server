@@ -6,11 +6,19 @@ import json
 import unittest
 from unittest.mock import patch
 
-from icloud_mcp.config import Settings
-from icloud_mcp.dashboard import DashboardRuntime, _dashboard_html, _health, _make_handler, localhost_port_available
-from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.repositories import ensure_defaults
-from icloud_mcp.server import create_server
+from icloud_mcp.dashboard.runtime import (
+    DashboardRuntime,
+    DashboardSnapshotPresenter,
+    _activity,
+    _dashboard_html,
+    _health,
+    _make_handler,
+    localhost_port_available,
+)
+from icloud_mcp.mcp.server import create_server
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.storage.cache_state import ensure_defaults
+from icloud_mcp.storage.connection import open_db
 from icloud_mcp.sync.checkpoints import update_checkpoint
 from icloud_mcp.sync.scheduler import SyncScheduler
 
@@ -33,7 +41,7 @@ class DashboardTests(unittest.TestCase):
         async def run() -> dict[str, object]:
             server = create_server(self.settings, self.db, scheduler=self.scheduler, dashboard=self.dashboard)
             tools = {tool.name: tool for tool in await server.list_tools()}
-            with patch("icloud_mcp.dashboard.ThreadingHTTPServer", return_value=fake_server):
+            with patch("icloud_mcp.dashboard.runtime.ThreadingHTTPServer", return_value=fake_server):
                 first_start = await server.call_tool("icloud.dashboard.start", {})
                 second_start = await server.call_tool("icloud.dashboard.start", {})
                 status = await server.call_tool("icloud.dashboard.status", {})
@@ -102,13 +110,13 @@ class DashboardTests(unittest.TestCase):
 
         dashboard = DashboardRuntime(self.db, self.settings, self.scheduler, default_port=blocked_port)
         try:
-            with patch("icloud_mcp.dashboard.ThreadingHTTPServer", side_effect=fake_server):
+            with patch("icloud_mcp.dashboard.runtime.ThreadingHTTPServer", side_effect=fake_server):
                 started = dashboard.start()
             self.assertTrue(started["running"])
             self.assertEqual(started["port"], blocked_port + 1)
-            with patch("icloud_mcp.dashboard.socket.socket", return_value=_FakeSocket()):
+            with patch("icloud_mcp.dashboard.runtime.socket.socket", return_value=_FakeSocket()):
                 self.assertTrue(localhost_port_available("127.0.0.1", 0))
-            with patch("icloud_mcp.dashboard.socket.socket", return_value=_FakeSocket(should_raise=True)):
+            with patch("icloud_mcp.dashboard.runtime.socket.socket", return_value=_FakeSocket(should_raise=True)):
                 self.assertFalse(localhost_port_available("127.0.0.1", 0))
         finally:
             dashboard.stop()
@@ -116,7 +124,7 @@ class DashboardTests(unittest.TestCase):
 
     def test_dashboard_port_exhaustion(self) -> None:
         with (
-            patch("icloud_mcp.dashboard.ThreadingHTTPServer", side_effect=OSError("occupied")),
+            patch("icloud_mcp.dashboard.runtime.ThreadingHTTPServer", side_effect=OSError("occupied")),
             self.assertRaisesRegex(RuntimeError, "no free localhost dashboard port"),
         ):
             self.dashboard.start()
@@ -179,9 +187,23 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn("app_password", json.dumps(snapshot))
 
     def test_health_classification_edges(self) -> None:
-        self.assertEqual(_health({"freshness_status": {}, "workers": {"x": {"status": "running"}}})["status"], "syncing")
-        self.assertEqual(_health({"freshness_status": {"mail": {"status": "stale"}}, "workers": {}})["status"], "degraded")
-        self.assertEqual(_health({"freshness_status": {"mail": {"status": "healthy"}}, "workers": {}})["status"], "healthy")
+        health = DashboardSnapshotPresenter.health
+
+        self.assertEqual(health({"freshness_status": {}, "workers": {"x": {"status": "running"}}})["status"], "syncing")
+        self.assertEqual(
+            health({"freshness_status": {"mail": {"status": "stale"}}, "workers": {}})["status"], "degraded"
+        )
+        self.assertEqual(
+            health({"freshness_status": {"mail": {"status": "healthy"}}, "workers": {}})["status"], "healthy"
+        )
+        self.assertEqual(_health({"freshness_status": {}, "workers": {}})["status"], "healthy")
+        self.assertFalse(
+            _activity(
+                {"workers": {}},
+                {"next_run_at": None, "last_cycle_started_at": None, "last_cycle_finished_at": None},
+                {"running": False},
+            )["live"]
+        )
 
     def test_dashboard_renders_worker_progress_bar(self) -> None:
         html = _dashboard_html()

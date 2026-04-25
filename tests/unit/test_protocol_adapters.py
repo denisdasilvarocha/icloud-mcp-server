@@ -7,15 +7,15 @@ from email.message import Message
 
 from icalendar import Calendar
 
-from icloud_mcp.adapters.caldav_calendar import CalDAVCalendarAdapter, _parse_sync_collection_response, _synced_event
-from icloud_mcp.adapters.carddav_contacts import (
+from icloud_mcp.calendar.adapter import CalDAVCalendarAdapter, _parse_sync_collection_response, _synced_event
+from icloud_mcp.calendar.cache import build_ics
+from icloud_mcp.contacts.adapter import (
     _contact_from_vcard,
 )
-from icloud_mcp.adapters.carddav_contacts import (
+from icloud_mcp.contacts.adapter import (
     _parse_sync_collection_response as _parse_carddav_sync_collection_response,
 )
-from icloud_mcp.adapters.imap_mail import _message_from_email, _message_id
-from icloud_mcp.db.repositories import build_ics
+from icloud_mcp.mail.adapter import _message_from_email, _message_id
 
 
 class ProtocolAdapterParsingTests(unittest.TestCase):
@@ -382,7 +382,6 @@ END:VCALENDAR
         )
 
         self.assertEqual(client.event_href, "https://caldav.icloud.com/e/1.ics")
-
 
     def test_build_ics_generates_parseable_calendar_data(self) -> None:
         raw_ics = build_ics(

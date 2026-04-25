@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from icloud_mcp.config import Settings
-from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.repositories import upsert_search_document
-from icloud_mcp.server import create_server
-from icloud_mcp.services.search import SearchService
+from icloud_mcp.mcp.server import create_server
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.search.repository import upsert_search_document
+from icloud_mcp.search.service import SearchService
+from icloud_mcp.storage.connection import open_db
 
 
 class MCPContractTests(unittest.TestCase):

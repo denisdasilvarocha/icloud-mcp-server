@@ -3,35 +3,35 @@ from __future__ import annotations
 import unittest
 from datetime import date
 
-from icloud_mcp.adapters.caldav_calendar import (
+from icloud_mcp.calendar.adapter import (
     SyncedCalendar,
     SyncedCalendarEvent,
 )
-from icloud_mcp.adapters.caldav_calendar import (
+from icloud_mcp.calendar.adapter import (
     WebDAVSyncResult as CalendarSyncResult,
 )
-from icloud_mcp.adapters.carddav_contacts import (
+from icloud_mcp.calendar.cache import upsert_calendar_collection, upsert_calendar_object
+from icloud_mcp.calendar.sync import CalendarSyncWorker
+from icloud_mcp.contacts.adapter import (
     SyncedAddressBook,
     SyncedContact,
 )
-from icloud_mcp.adapters.carddav_contacts import (
+from icloud_mcp.contacts.adapter import (
     WebDAVSyncResult as ContactSyncResult,
 )
-from icloud_mcp.adapters.imap_mail import DeletedMailMessage, IMAPSyncDelta, SyncedMailbox, SyncedMailMessage
-from icloud_mcp.config import Settings
-from icloud_mcp.db.connection import open_db
-from icloud_mcp.db.repositories import (
-    ensure_defaults,
-    search_documents,
-    sync_status,
-    upsert_addressbook,
-    upsert_calendar_collection,
-    upsert_calendar_object,
-    upsert_contact,
+from icloud_mcp.contacts.cache import upsert_addressbook, upsert_contact
+from icloud_mcp.contacts.sync import ContactsSyncWorker
+from icloud_mcp.mail.adapter import DeletedMailMessage, IMAPSyncDelta, SyncedMailbox, SyncedMailMessage
+from icloud_mcp.mail.sync import MailBackfillWorker, MailSyncWorker
+from icloud_mcp.platform.config import Settings
+from icloud_mcp.search.repository import search_documents
+from icloud_mcp.storage.cache_state import ensure_defaults, sync_status
+from icloud_mcp.storage.connection import open_db
+from icloud_mcp.sync.capabilities import (
+    supports_calendar_delta,
+    supports_contacts_delta,
+    supports_mail_incremental,
 )
-from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
-from icloud_mcp.sync.contacts_sync import ContactsSyncWorker
-from icloud_mcp.sync.mail_sync import MailBackfillWorker, MailSyncWorker
 from icloud_mcp.sync.scheduler import SyncScheduler
 
 
@@ -392,6 +392,14 @@ class SyncWorkerTests(unittest.TestCase):
         self.assertIn("contact_1", ids)
         self.assertIn("cal_evt_1", ids)
         self.assertIn("mail_msg_1", ids)
+
+    def test_sync_adapter_capability_seams_are_explicit(self) -> None:
+        self.assertFalse(supports_mail_incremental(FakeMailAdapter()))
+        self.assertTrue(supports_mail_incremental(FakeMailIncrementalAdapter()))
+        self.assertFalse(supports_calendar_delta(FakeCalendarAdapter()))
+        self.assertTrue(supports_calendar_delta(FakeCalendarDeltaAdapter()))
+        self.assertFalse(supports_contacts_delta(FakeContactsAdapter()))
+        self.assertTrue(supports_contacts_delta(FakeContactsDeltaAdapter()))
 
     def test_mail_backfill_syncs_older_mail_batch(self) -> None:
         MailSyncWorker(self.db, self.settings, FakeMailAdapter()).run_once()
