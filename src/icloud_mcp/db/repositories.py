@@ -398,22 +398,37 @@ def search_documents(
         placeholders = ",".join("?" for _ in domains)
         rows = db.query(
             f"""
+            WITH raw_matches AS (
+              SELECT
+                d.id,
+                d.domain,
+                d.object_id,
+                d.occurrence_id,
+                d.title,
+                d.canonical_text,
+                d.metadata_json,
+                search_fts.text AS matched_text,
+                bm25(search_fts) AS rank
+              FROM search_fts
+              JOIN search_documents d ON d.id = search_fts.document_id
+              WHERE search_fts MATCH ?
+                AND d.deleted_at IS NULL
+                AND d.domain IN ({placeholders})
+            ),
+            ranked_matches AS (
+              SELECT
+                *,
+                ROW_NUMBER() OVER (
+                  PARTITION BY domain, object_id
+                  ORDER BY rank ASC, id ASC
+                ) AS object_rank
+              FROM raw_matches
+            )
             SELECT
-              d.id,
-              d.domain,
-              d.object_id,
-              d.occurrence_id,
-              d.title,
-              d.canonical_text,
-              d.metadata_json,
-              search_fts.text AS matched_text,
-              bm25(search_fts) AS rank
-            FROM search_fts
-            JOIN search_documents d ON d.id = search_fts.document_id
-            WHERE search_fts MATCH ?
-              AND d.deleted_at IS NULL
-              AND d.domain IN ({placeholders})
-            ORDER BY rank ASC
+              id, domain, object_id, occurrence_id, title, canonical_text, metadata_json, matched_text, rank
+            FROM ranked_matches
+            WHERE object_rank = 1
+            ORDER BY rank ASC, id ASC
             LIMIT ? OFFSET ?
             """,
             (fts_query, *domains, query_limit, offset),
@@ -422,10 +437,20 @@ def search_documents(
         placeholders = ",".join("?" for _ in domains)
         rows = db.query(
             f"""
-            SELECT id, domain, object_id, occurrence_id, title, canonical_text, metadata_json, 0.0 AS rank
-            FROM search_documents
-            WHERE deleted_at IS NULL AND domain IN ({placeholders})
-            ORDER BY updated_at DESC
+            WITH ranked_documents AS (
+              SELECT
+                id, domain, object_id, occurrence_id, title, canonical_text, metadata_json, updated_at, 0.0 AS rank,
+                ROW_NUMBER() OVER (
+                  PARTITION BY domain, object_id
+                  ORDER BY updated_at DESC, id ASC
+                ) AS object_rank
+              FROM search_documents
+              WHERE deleted_at IS NULL AND domain IN ({placeholders})
+            )
+            SELECT id, domain, object_id, occurrence_id, title, canonical_text, metadata_json, rank
+            FROM ranked_documents
+            WHERE object_rank = 1
+            ORDER BY updated_at DESC, id ASC
             LIMIT ? OFFSET ?
             """,
             (*domains, query_limit, offset),
@@ -1127,6 +1152,9 @@ def update_calendar_event(
             "latest_etag": current["etag"],
             "latest": _calendar_summary(current),
         }
+    errors = validate_event_patch(patch, current)
+    if errors:
+        return {"status": "invalid", "event_id": event_id, "errors": errors}
     if scope == "single":
         return _update_single_occurrence(
             db, current, patch, etag_override=etag_override, raw_ics_override=raw_ics_override
@@ -1913,6 +1941,14 @@ def upsert_mail_message(
             subject, from_address, to_addresses, cc_addresses or [], bcc_addresses or [], preview, indexed_body
         ),
     )
+    db.execute(
+        """
+        UPDATE search_documents
+        SET deleted_at = ?
+        WHERE domain = 'mail_invite' AND object_id = ? AND deleted_at IS NULL
+        """,
+        (now, message_id),
+    )
     for invite in calendar_invites or []:
         _index_mail_invite(db, message_id=message_id, subject=subject, sender=sender, invite=invite)
 
@@ -2255,17 +2291,21 @@ def _valid_iana_timezone(timezone: str) -> bool:
     return True
 
 
-def validate_event_patch(patch: dict[str, Any]) -> list[str]:
+def validate_event_patch(patch: dict[str, Any], current: dict[str, Any] | None = None) -> list[str]:
     """Validate calendar update patch."""
 
     if not patch:
         return ["patch must not be empty"]
+    current_attendees = parse_json(current.get("attendees_json"), []) if current else []
+    patch_changes_time = "start" in patch or "end" in patch
+    default_start = current.get("dtstart") if current and patch_changes_time else "2026-01-01T00:00:00+00:00"
+    default_end = current.get("dtend") if current and patch_changes_time else "2026-01-01T01:00:00+00:00"
     input_data = {
-        "title": patch.get("title", "existing event"),
-        "start": patch.get("start", "2026-01-01T00:00:00+00:00"),
-        "end": patch.get("end", "2026-01-01T01:00:00+00:00"),
-        "timezone": patch.get("timezone", "UTC"),
-        "attendees": patch.get("attendees", []),
+        "title": patch.get("title", current.get("summary") if current else "existing event"),
+        "start": patch.get("start", default_start),
+        "end": patch.get("end", default_end),
+        "timezone": patch.get("timezone", current.get("timezone") if current else "UTC"),
+        "attendees": patch.get("attendees", current_attendees),
         "recurrence": patch.get("recurrence"),
     }
     return validate_event_input(input_data)

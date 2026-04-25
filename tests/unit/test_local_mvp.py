@@ -497,6 +497,40 @@ class LocalMVPTests(unittest.TestCase):
         self.assertEqual(invite[0]["id"], "mail_msg_1")
         self.assertEqual(current[0]["source_quality"], "spam")
 
+    def test_mail_invite_documents_are_removed_when_message_loses_invites(self) -> None:
+        upsert_mailbox(
+            self.db, account_id="local", mailbox_id="mb_inbox", name="INBOX", last_sync_at="2026-04-24T00:00:00+00:00"
+        )
+        message = {
+            "account_id": "local",
+            "mailbox_id": "mb_inbox",
+            "message_id": "mail_msg_invite",
+            "uid": 12,
+            "header_message_id": "<invite@example.com>",
+            "subject": "Budget notes",
+            "from_address": {"name": "Liesa", "email": "liesa@example.com"},
+            "to_addresses": [{"name": "Me", "email": "me@example.com"}],
+            "date": "2026-04-24T09:00:00+02:00",
+            "preview": "Budget",
+            "body_text": "Budget message",
+        }
+        upsert_mail_message(
+            self.db,
+            **message,
+            calendar_invites=[{"uid": "invite-1", "summary": "Budget Review", "start": "2026-04-28T10:00:00+02:00"}],
+        )
+        invite = search_documents(
+            self.db, query="Budget Review", domains=["mail_invite"], limit=5, offset=0, snippet_chars=300
+        )
+        self.assertEqual(invite[0]["id"], "mail_msg_invite")
+
+        upsert_mail_message(self.db, **message, calendar_invites=[])
+
+        self.assertEqual(
+            search_documents(self.db, query="Budget Review", domains=["mail_invite"], limit=5, offset=0, snippet_chars=300),
+            [],
+        )
+
     def test_calendar_recurrence_exdate_and_rdate_are_expanded(self) -> None:
         raw_ics = """BEGIN:VCALENDAR
 VERSION:2.0
@@ -573,6 +607,50 @@ END:VCALENDAR
         self.assertEqual(old_starts, ["2026-04-27T08:00:00+00:00", "2026-04-28T08:00:00+00:00"])
         self.assertEqual(future_events[0]["title"], "Daily Planning")
         self.assertEqual(future_events[0]["time"]["start"], "2026-04-29T08:00:00+00:00")
+
+    def test_recurring_calendar_search_deduplicates_before_limit(self) -> None:
+        recurring = create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Team Sync",
+            start="2026-04-27T08:00:00+00:00",
+            end="2026-04-27T08:30:00+00:00",
+            timezone="UTC",
+            recurrence={"freq": "daily", "count": 20},
+        )
+        other = create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Team Sync Planning",
+            start="2026-04-27T09:00:00+00:00",
+            end="2026-04-27T09:30:00+00:00",
+            timezone="UTC",
+        )
+
+        results = search_documents(self.db, query="Team Sync", domains=["calendar"], limit=2, offset=0, snippet_chars=300)
+
+        self.assertEqual({result["id"] for result in results}, {recurring["event_id"], other["event_id"]})
+
+    def test_calendar_update_validates_partial_patch_against_current_event(self) -> None:
+        created = create_calendar_event(
+            self.db,
+            calendar_id=self.settings.default_calendar_id,
+            title="Planning",
+            start="2026-04-27T10:00:00+00:00",
+            end="2026-04-27T11:00:00+00:00",
+            timezone="UTC",
+        )
+
+        result = update_calendar_event(
+            self.db,
+            event_id=created["event_id"],
+            patch={"end": "2026-04-27T09:30:00+00:00"},
+            etag=None,
+            scope="series",
+        )
+
+        self.assertEqual(result["status"], "invalid")
+        self.assertIn("end must be after start", result["errors"])
 
     def test_contact_alias_local_part_and_tombstone_cleanup(self) -> None:
         upsert_contact(

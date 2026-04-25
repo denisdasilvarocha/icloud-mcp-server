@@ -168,12 +168,12 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
         patch = input_data.get("patch") or {}
         if not event_id:
             return {"status": "invalid", "errors": ["event_id is required"]}
-        errors = validate_event_patch(patch)
-        if errors:
-            return {"status": "invalid", "errors": errors}
         current = get_calendar_object(db, event_id)
         if not current:
             return {"status": "not_found", "event_id": event_id}
+        errors = validate_event_patch(patch, current)
+        if errors:
+            return {"status": "invalid", "errors": errors}
         scope = input_data.get("scope", "series")
         if scope != "series":
             return {
