@@ -1,0 +1,43 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Local SQLite databases
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# Project-scoped MCP client config can contain iCloud credentials
+.codex/config.toml
+.mcp.json
+.hermes/
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
