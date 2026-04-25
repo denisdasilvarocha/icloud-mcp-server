@@ -549,9 +549,7 @@ class CoverageEdgesTests(unittest.TestCase):
 
         fake_adapter = SimpleNamespace(discover=lambda **kwargs: [remote_calendar], create_event=create_remote)
         with (
-            patch(
-                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-            ),
+            patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")),
             patch(
                 "icloud_mcp.calendar.write.CalDAVCalendarAdapter",
                 return_value=SimpleNamespace(discover=lambda **kwargs: [], create_event=create_remote),
@@ -559,9 +557,7 @@ class CoverageEdgesTests(unittest.TestCase):
         ):
             self.assertEqual(asyncio.run(mcp.tools["icloud.calendar.create_event"](valid))["status"], "sync_required")
         with (
-            patch(
-                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-            ),
+            patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")),
             patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=fake_adapter),
         ):
             created = asyncio.run(mcp.tools["icloud.calendar.create_event"](valid))
@@ -594,9 +590,7 @@ class CoverageEdgesTests(unittest.TestCase):
             create_event=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("offline")),
         )
         with (
-            patch(
-                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-            ),
+            patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")),
             patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=raising_adapter),
         ):
             self.assertEqual(
@@ -610,9 +604,7 @@ class CoverageEdgesTests(unittest.TestCase):
         )
         update_adapter = SimpleNamespace(update_event=lambda **kwargs: remote_update)
         with (
-            patch(
-                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-            ),
+            patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")),
             patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=update_adapter),
         ):
             updated = asyncio.run(
@@ -655,9 +647,7 @@ class CoverageEdgesTests(unittest.TestCase):
             )["status"],
             "credential_missing",
         )
-        with patch(
-            "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-        ):
+        with patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")):
             self.assertEqual(
                 asyncio.run(
                     mcp.tools["icloud.calendar.update_event"](
@@ -685,9 +675,7 @@ class CoverageEdgesTests(unittest.TestCase):
             etag=None,
         )
         self.db.execute("UPDATE calendar_objects SET etag = NULL WHERE id = ?", (no_etag["event_id"],))
-        with patch(
-            "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-        ):
+        with patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")):
             self.assertEqual(
                 asyncio.run(
                     mcp.tools["icloud.calendar.update_event"](
@@ -707,9 +695,7 @@ class CoverageEdgesTests(unittest.TestCase):
             "cal_discovered", "https://cal.example/discovered/", "Discovered", None, False
         )
         discover_adapter = SimpleNamespace(discover=lambda **kwargs: [new_remote])
-        with patch(
-            "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-        ):
+        with patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")):
             self.assertEqual(
                 calendar_tool_module._calendar_for_write(self.db, self.settings, discover_adapter, "cal_discovered")[
                     "id"
@@ -720,9 +706,7 @@ class CoverageEdgesTests(unittest.TestCase):
             self.assertIsNone(calendar_tool_module._calendar_for_write(self.db, self.settings, fake_adapter, "missing"))
         remote_dict_adapter = SimpleNamespace(update_event=lambda **kwargs: {"status": "conflict"})
         with (
-            patch(
-                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-            ),
+            patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")),
             patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=remote_dict_adapter),
         ):
             self.assertEqual(
@@ -737,9 +721,7 @@ class CoverageEdgesTests(unittest.TestCase):
             update_event=lambda **kwargs: (_ for _ in ()).throw(RuntimeError("offline"))
         )
         with (
-            patch(
-                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-            ),
+            patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")),
             patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=remote_raising_adapter),
         ):
             self.assertEqual(
@@ -1221,6 +1203,11 @@ END:VCALENDAR
         fake = _FakeVectorDb()
         with patch("icloud_mcp.search.vector_backend.sqlite_vec.load", side_effect=RuntimeError()):
             self.assertFalse(backend.ensure_vector_backend(fake))
+        cached_fake = _FakeVectorDb()
+        with patch("icloud_mcp.search.vector_backend.sqlite_vec.load") as load:
+            self.assertTrue(backend.ensure_vector_backend(cached_fake))
+            self.assertTrue(backend.ensure_vector_backend(cached_fake))
+            self.assertEqual(load.call_count, 1)
         with patch("icloud_mcp.search.vector_backend.ensure_vector_backend", return_value=False):
             self.assertFalse(backend.upsert_chunk_vector(fake, "chunk", "text"))
             backend.delete_document_vectors(fake, "doc")

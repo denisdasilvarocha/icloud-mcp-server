@@ -12,7 +12,7 @@ from icloud_mcp.search.chunker import chunk_text
 from icloud_mcp.search.query_cache import query_cache_get as query_cache_get
 from icloud_mcp.search.query_cache import query_cache_set as query_cache_set
 from icloud_mcp.search.rerank import reciprocal_rank_score
-from icloud_mcp.search.vector import VECTOR_MODEL, cosine_score, cosine_score_vectors, embedding_vector
+from icloud_mcp.search.vector import SYNONYMS, VECTOR_MODEL, cosine_score, cosine_score_vectors, embedding_vector
 from icloud_mcp.search.vector_backend import delete_document_vectors, query_similar_chunks
 from icloud_mcp.storage.cache_state import bump_index_generation
 from icloud_mcp.storage.connection import Database
@@ -84,73 +84,75 @@ def upsert_search_document(
         or [{"text": text, "type": "body"}]
     )
 
-    db.execute(
-        """
-        INSERT INTO search_documents
-          (id, domain, object_id, occurrence_id, title, canonical_text, metadata_json, updated_at, deleted_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-        ON CONFLICT(id) DO UPDATE SET
-          domain = excluded.domain,
-          object_id = excluded.object_id,
-          occurrence_id = excluded.occurrence_id,
-          title = excluded.title,
-          canonical_text = excluded.canonical_text,
-          metadata_json = excluded.metadata_json,
-          updated_at = excluded.updated_at,
-          deleted_at = NULL
-        """,
-        (document_id, domain, object_id, occurrence_id, title, text, metadata_json, now),
-    )
-    delete_document_vectors(db, document_id)
-    db.execute(
-        "DELETE FROM search_embeddings WHERE chunk_id IN (SELECT id FROM search_chunks WHERE document_id = ?)",
-        (document_id,),
-    )
-    db.execute("DELETE FROM search_chunks WHERE document_id = ?", (document_id,))
-    db.execute("DELETE FROM search_fts WHERE document_id = ?", (document_id,))
-    for chunk_index, chunk in enumerate(chunk_rows):
-        chunk_text_value = str(chunk.get("text") or "")
-        chunk_metadata = {
-            **(metadata or {}),
-            **dict(chunk.get("metadata") or {}),
-            "chunk_type": chunk.get("type", "body"),
-        }
-        chunk_id = f"{document_id}:{chunk_index}"
+    if db.query_one("SELECT 1 FROM search_documents WHERE id = ?", (document_id,)):
+        delete_document_vectors(db, document_id)
+    with db.transaction():
         db.execute(
             """
-            INSERT INTO search_chunks
-              (id, document_id, chunk_index, chunk_type, text, token_count, text_hash, metadata_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO search_documents
+              (id, domain, object_id, occurrence_id, title, canonical_text, metadata_json, updated_at, deleted_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(id) DO UPDATE SET
+              domain = excluded.domain,
+              object_id = excluded.object_id,
+              occurrence_id = excluded.occurrence_id,
+              title = excluded.title,
+              canonical_text = excluded.canonical_text,
+              metadata_json = excluded.metadata_json,
+              updated_at = excluded.updated_at,
+              deleted_at = NULL
             """,
-            (
-                chunk_id,
-                document_id,
-                chunk_index,
-                str(chunk.get("type") or "body"),
-                chunk_text_value,
-                len(tokenize(chunk_text_value)),
-                sha256_text(chunk_text_value),
-                compact_json(chunk_metadata),
-                now,
-            ),
+            (document_id, domain, object_id, occurrence_id, title, text, metadata_json, now),
         )
         db.execute(
-            """
-            INSERT INTO search_fts (document_id, object_id, domain, title, text, sender, participants)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (document_id, object_id, domain, title, chunk_text_value, sender, participants),
+            "DELETE FROM search_embeddings WHERE chunk_id IN (SELECT id FROM search_chunks WHERE document_id = ?)",
+            (document_id,),
         )
-    db.execute(
-        """
-        INSERT OR REPLACE INTO search_embeddings (chunk_id, embedding_model, vector_json, updated_at)
-        SELECT id, ?, ?, ?
-        FROM search_chunks
-        WHERE document_id = ? AND chunk_index = 0
-        """,
-        (VECTOR_MODEL, compact_json(embedding_vector(text)), now, document_id),
-    )
-    bump_index_generation(db)
+        db.execute("DELETE FROM search_chunks WHERE document_id = ?", (document_id,))
+        db.execute("DELETE FROM search_fts WHERE document_id = ?", (document_id,))
+        for chunk_index, chunk in enumerate(chunk_rows):
+            chunk_text_value = str(chunk.get("text") or "")
+            chunk_metadata = {
+                **(metadata or {}),
+                **dict(chunk.get("metadata") or {}),
+                "chunk_type": chunk.get("type", "body"),
+            }
+            chunk_id = f"{document_id}:{chunk_index}"
+            db.execute(
+                """
+                INSERT INTO search_chunks
+                  (id, document_id, chunk_index, chunk_type, text, token_count, text_hash, metadata_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chunk_id,
+                    document_id,
+                    chunk_index,
+                    str(chunk.get("type") or "body"),
+                    chunk_text_value,
+                    len(tokenize(chunk_text_value)),
+                    sha256_text(chunk_text_value),
+                    compact_json(chunk_metadata),
+                    now,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO search_fts (document_id, object_id, domain, title, text, sender, participants)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (document_id, object_id, domain, title, chunk_text_value, sender, participants),
+            )
+        db.execute(
+            """
+            INSERT OR REPLACE INTO search_embeddings (chunk_id, embedding_model, vector_json, updated_at)
+            SELECT id, ?, ?, ?
+            FROM search_chunks
+            WHERE document_id = ? AND chunk_index = 0
+            """,
+            (VECTOR_MODEL, compact_json(embedding_vector(text)), now, document_id),
+        )
+        bump_index_generation(db)
 
 
 def search_documents(
@@ -168,13 +170,18 @@ def search_documents(
     """Run local lexical FTS search and return compact rows."""
 
     terms = tokenize(query)
-    query_limit = min(max(limit * 5, limit + 1), 100)
+    query_multiplier = 5 if domains == ["calendar"] else 2
+    query_limit = min(max(limit * query_multiplier, limit + 1), query_multiplier * 20)
     if terms:
-        fts_query = " OR ".join(f'"{term}"' for term in terms[:8])
+        fts_operator = " AND " if len(terms) > 1 else " OR "
+        fts_query = fts_operator.join(f'"{term}"' for term in terms[:8])
         placeholders = ",".join("?" for _ in domains)
+        lexical_limit = query_limit * 20 if domains == ["calendar"] else query_limit
         rows = db.query(
             f"""
-            WITH raw_matches AS (
+            SELECT
+              id, domain, object_id, occurrence_id, title, canonical_text, metadata_json, matched_text, rank
+            FROM (
               SELECT
                 d.id,
                 d.domain,
@@ -183,31 +190,23 @@ def search_documents(
                 d.title,
                 d.canonical_text,
                 d.metadata_json,
-                search_fts.text AS matched_text,
-                bm25(search_fts) AS rank
-              FROM search_fts
-              JOIN search_documents d ON d.id = search_fts.document_id
-              WHERE search_fts MATCH ?
-                AND d.deleted_at IS NULL
+                raw_matches.matched_text,
+                raw_matches.rank
+              FROM (
+                SELECT document_id, text AS matched_text, bm25(search_fts) AS rank
+                FROM search_fts
+                WHERE search_fts MATCH ?
+                ORDER BY rank ASC, document_id ASC
+                LIMIT ?
+              ) AS raw_matches
+              JOIN search_documents d ON d.id = raw_matches.document_id
+              WHERE d.deleted_at IS NULL
                 AND d.domain IN ({placeholders})
-            ),
-            ranked_matches AS (
-              SELECT
-                *,
-                ROW_NUMBER() OVER (
-                  PARTITION BY domain, object_id
-                  ORDER BY rank ASC, id ASC
-                ) AS object_rank
-              FROM raw_matches
             )
-            SELECT
-              id, domain, object_id, occurrence_id, title, canonical_text, metadata_json, matched_text, rank
-            FROM ranked_matches
-            WHERE object_rank = 1
             ORDER BY rank ASC, id ASC
             LIMIT ? OFFSET ?
             """,
-            (fts_query, *domains, query_limit, offset),
+            (fts_query, lexical_limit, *domains, lexical_limit, offset),
         )
     else:
         placeholders = ",".join("?" for _ in domains)
@@ -232,7 +231,10 @@ def search_documents(
             (*domains, query_limit, offset),
         )
 
-    rows = _rerank_rows(_add_semantic_results(db, query=query, domains=domains, rows=rows, limit=query_limit))
+    if rows or _has_semantic_expansion(terms):
+        rows = _rerank_rows(_add_semantic_results(db, query=query, domains=domains, rows=rows, limit=limit))
+    else:
+        rows = _rerank_rows(rows)
 
     results = []
     seen_documents: set[str] = set()
@@ -279,29 +281,34 @@ def _add_semantic_results(
     rows: list[dict[str, Any]],
     limit: int,
 ) -> list[dict[str, Any]]:
-    if len(rows) >= limit:
+    if rows:
         return rows
     existing = {row["id"] for row in rows}
     semantic_rows = _sqlite_vec_semantic_results(db, query=query, domains=domains, existing=existing, limit=limit)
-    if semantic_rows:
+    if semantic_rows is not None:
         return rows + semantic_rows[: max(0, limit - len(rows))]
+    query_vector = embedding_vector(query)
+    if not query_vector:
+        return rows
     placeholders = ",".join("?" for _ in domains)
+    token_filter = " OR ".join("e.vector_json LIKE ? ESCAPE '\\'" for _ in query_vector)
+    token_parameters = tuple(f'%"{_escape_like(token)}"%' for token in query_vector)
     candidates = db.query(
         f"""
         SELECT d.id, d.domain, d.object_id, d.occurrence_id, d.title, d.canonical_text, d.metadata_json,
                e.vector_json
         FROM search_documents d
-        LEFT JOIN search_chunks c ON c.document_id = d.id AND c.chunk_index = 0
-        LEFT JOIN search_embeddings e ON e.chunk_id = c.id
+        JOIN search_chunks c ON c.document_id = d.id AND c.chunk_index = 0
+        JOIN search_embeddings e ON e.chunk_id = c.id
         WHERE d.deleted_at IS NULL AND d.domain IN ({placeholders})
+          AND ({token_filter})
         """,
-        (*domains,),
+        (*domains, *token_parameters),
     )
     semantic_rows = []
     for candidate in candidates:
         if candidate["id"] in existing:
             continue
-        query_vector = embedding_vector(query)
         vector = parse_json(candidate.get("vector_json"), None)
         score = (
             cosine_score_vectors(query_vector, vector)
@@ -315,6 +322,17 @@ def _add_semantic_results(
         semantic_rows.append(candidate)
     semantic_rows.sort(key=lambda row: row["score"], reverse=True)
     return rows + semantic_rows[: max(0, limit - len(rows))]
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _has_semantic_expansion(terms: list[str]) -> bool:
+    semantic_terms = set(SYNONYMS)
+    for values in SYNONYMS.values():
+        semantic_terms.update(values)
+    return any(term in semantic_terms for term in terms)
 
 
 def _rerank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -352,10 +370,10 @@ def _sqlite_vec_semantic_results(
     domains: list[str],
     existing: set[str],
     limit: int,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
     nearest = query_similar_chunks(db, query, max(limit * 5, 10))
     if not nearest:
-        return []
+        return None
     placeholders = ",".join("?" for _ in nearest)
     domain_placeholders = ",".join("?" for _ in domains)
     distances = {row["chunk_id"]: float(row["distance"]) for row in nearest}
