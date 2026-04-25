@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from urllib.parse import urljoin
+from urllib.parse import urldefrag, urljoin
 
 from icloud_mcp.adapters.caldav_calendar import CalDAVCalendarAdapter
 from icloud_mcp.config import Settings
@@ -88,11 +88,16 @@ class CalendarSyncWorker:
                     status=event.status,
                 )
             for href in deleted_hrefs:
-                row = self.db.query_one(
-                    "SELECT id FROM calendar_objects WHERE href = ? AND deleted_at IS NULL",
-                    (href,),
+                rows = self.db.query(
+                    """
+                    SELECT id
+                    FROM calendar_objects
+                    WHERE deleted_at IS NULL
+                      AND (href = ? OR href LIKE ? ESCAPE '\\')
+                    """,
+                    (href, f"{_escape_like(href)}#%"),
                 )
-                if row:
+                for row in rows:
                     tombstone_calendar_object(self.db, row["id"])
             synced_by_calendar: dict[str, set[str]] = {}
             for event in events:
@@ -189,4 +194,8 @@ class CalendarSyncWorker:
 
 
 def _absolute_member_url(collection_url: str, href: str) -> str:
-    return urljoin(collection_url, href)
+    return urldefrag(urljoin(collection_url, href)).url
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

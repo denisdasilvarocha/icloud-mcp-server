@@ -241,6 +241,48 @@ END:VCALENDAR
         self.assertEqual(synced.summary, "Project Sync with Liesa")
         self.assertEqual(synced.attendees, [{"email": "liesa@example.com", "name": "Liesa"}])
 
+    def test_caldav_expanded_recurrences_get_distinct_local_hrefs(self) -> None:
+        event = type(
+            "Event",
+            (),
+            {"url": "https://caldav.icloud.com/e/recurring.ics", "props": {"{DAV:}getetag": '"v1"'}},
+        )()
+        first = _synced_event(
+            "cal_1",
+            event,
+            """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:event-1
+SUMMARY:Weekly Sync
+DTSTART:20260427T120000Z
+DTEND:20260427T130000Z
+RECURRENCE-ID:20260427T120000Z
+END:VEVENT
+END:VCALENDAR
+""",
+        )
+        second = _synced_event(
+            "cal_1",
+            event,
+            """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:event-1
+SUMMARY:Weekly Sync
+DTSTART:20260504T120000Z
+DTEND:20260504T130000Z
+RECURRENCE-ID:20260504T120000Z
+END:VEVENT
+END:VCALENDAR
+""",
+        )
+
+        self.assertNotEqual(first.href, second.href)
+        self.assertNotEqual(first.id, second.id)
+        self.assertTrue(first.href.startswith("https://caldav.icloud.com/e/recurring.ics#recurrence-"))
+        self.assertEqual(first.etag, '"v1"')
+
     def test_caldav_sync_collection_parser_extracts_changed_and_deleted_hrefs(self) -> None:
         parsed = _parse_sync_collection_response(
             """<?xml version="1.0" encoding="utf-8" ?>
@@ -265,6 +307,31 @@ END:VCALENDAR
         self.assertEqual(parsed.changed[0].href, "/caldav/calendars/1.ics")
         self.assertEqual(parsed.changed[0].etag, '"event-etag"')
         self.assertEqual(parsed.deleted, ["/caldav/calendars/deleted.ics"])
+
+    def test_caldav_sync_changes_preserves_report_etag(self) -> None:
+        client = _FakeCalDAVClient()
+        client.event.etag = None
+        client.event.data = """BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:event-1
+SUMMARY:Changed
+DTSTART:20260427T120000Z
+DTEND:20260427T130000Z
+END:VEVENT
+END:VCALENDAR
+"""
+        adapter = _FakeCalDAVCalendarAdapter(client)
+
+        _, events = adapter.sync_event_changes(
+            apple_id="person@example.com",
+            app_password="app-password",
+            calendar_id="cal_1",
+            calendar_url="https://caldav.icloud.com/e/",
+            sync_token="sync-token-1",
+        )
+
+        self.assertEqual(events[0].etag, '"event-etag"')
 
     def test_caldav_update_event_sends_if_match_header(self) -> None:
         raw_ics = """BEGIN:VCALENDAR
@@ -292,6 +359,30 @@ END:VCALENDAR
         self.assertEqual(client.put_headers["If-Match"], '"v1"')
         self.assertEqual(client.put_headers["Content-Type"], 'text/calendar; charset="utf-8"')
         self.assertEqual(client.put_body, raw_ics)
+
+    def test_caldav_update_event_strips_local_recurrence_fragment(self) -> None:
+        client = _FakeCalDAVClient()
+        adapter = _FakeCalDAVCalendarAdapter(client)
+
+        adapter.update_event(
+            apple_id="person@example.com",
+            app_password="app-password",
+            event_href="https://caldav.icloud.com/e/1.ics#recurrence-local",
+            raw_ics="""BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:event-1
+SUMMARY:Updated
+DTSTART:20260427T120000Z
+DTEND:20260427T130000Z
+END:VEVENT
+END:VCALENDAR
+""",
+            expected_etag='"v1"',
+        )
+
+        self.assertEqual(client.event_href, "https://caldav.icloud.com/e/1.ics")
+
 
     def test_build_ics_generates_parseable_calendar_data(self) -> None:
         raw_ics = build_ics(
@@ -328,6 +419,8 @@ class _FakeCalDAVCalendarAdapter(CalDAVCalendarAdapter):
 class _FakeCalDAVClient:
     def __init__(self) -> None:
         self.event = _FakeCalDAVEvent(self)
+        self.calendar = _FakeCalDAVCalendar(self)
+        self.event_href = ""
         self.put_headers: dict[str, str] = {}
         self.put_body = ""
 
@@ -337,13 +430,41 @@ class _FakeCalDAVClient:
     def __exit__(self, *args: object) -> None:
         return None
 
+    def principal(self) -> object:
+        return type("Principal", (), {"calendars": lambda _: [self.calendar]})()
+
     def event_by_url(self, event_href: str) -> _FakeCalDAVEvent:
+        self.event_href = event_href
         return self.event
+
+    def report(self, url: str, body: str, depth: int) -> object:
+        return type(
+            "Response",
+            (),
+            {
+                "text": """<d:multistatus xmlns:d="DAV:">
+  <d:sync-token>sync-token-2</d:sync-token>
+  <d:response>
+    <d:href>1.ics</d:href>
+    <d:propstat>
+      <d:prop><d:getetag>"event-etag"</d:getetag></d:prop>
+      <d:status>HTTP/1.1 200 OK</d:status>
+    </d:propstat>
+  </d:response>
+</d:multistatus>"""
+            },
+        )()
 
     def put(self, url: str, body: str, headers: dict[str, str]) -> _FakeCalDAVResponse:
         self.put_body = body
         self.put_headers = headers
         return _FakeCalDAVResponse()
+
+
+class _FakeCalDAVCalendar:
+    def __init__(self, client: _FakeCalDAVClient) -> None:
+        self.client = client
+        self.url = "https://caldav.icloud.com/e/"
 
 
 class _FakeCalDAVEvent:

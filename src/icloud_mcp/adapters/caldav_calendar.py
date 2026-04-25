@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urldefrag, urljoin
 from xml.sax.saxutils import escape
 
 from defusedxml import ElementTree
@@ -154,7 +154,7 @@ class CalDAVCalendarAdapter:
                 event = _event_by_url(client, event_href)
                 data = _event_data(event)
                 if data:
-                    events.append(_synced_event(calendar_id, event, data))
+                    events.append(_synced_event(calendar_id, event, data, etag_override=change.etag))
         return result, events
 
     def create_event(
@@ -280,16 +280,18 @@ def _response_text(response: Any) -> str:
     return str(response)
 
 
-def _synced_event(calendar_id: str, event: Any, raw_ics: str) -> SyncedCalendarEvent:
+def _synced_event(
+    calendar_id: str, event: Any, raw_ics: str, *, etag_override: str | None = None
+) -> SyncedCalendarEvent:
     parsed = _parse_ics(raw_ics)
     uid = parsed["uid"] or _uid_from_ics(raw_ics)
-    href = str(getattr(event, "url", ""))
+    href = _synced_href(str(getattr(event, "url", "")), parsed)
     return SyncedCalendarEvent(
         id=f"cal_evt_{hashlib.sha256((calendar_id + href).encode('utf-8')).hexdigest()[:24]}",
         calendar_id=calendar_id,
         href=href,
         uid=uid,
-        etag=_etag(event),
+        etag=etag_override or _etag(event),
         raw_ics=raw_ics,
         summary=parsed["summary"] or "(untitled)",
         description=parsed["description"],
@@ -365,6 +367,18 @@ def _event_data(event: Any) -> str | None:
     return None
 
 
+def _synced_href(href: str, parsed: dict[str, Any]) -> str:
+    recurrence_id = parsed["recurrence_id"]
+    if not recurrence_id:
+        return href
+    suffix = hashlib.sha256(recurrence_id.encode("utf-8")).hexdigest()[:16]
+    return f"{_remote_href(href)}#recurrence-{suffix}"
+
+
+def _remote_href(href: str) -> str:
+    return urldefrag(href).url
+
+
 def _save_event(event: Any, raw_ics: str, expected_etag: str | None) -> None:
     event.data = raw_ics
     if not expected_etag:
@@ -397,11 +411,21 @@ def _raise_for_write_failure(response: Any) -> None:
 def _etag(event: Any) -> str | None:
     if hasattr(event, "get_etag"):
         try:
-            return str(event.get_etag())
+            value = event.get_etag()
+            if value:
+                return str(value)
         except Exception:
-            return None
+            pass
     value = getattr(event, "etag", None)
-    return str(value) if value else None
+    if value:
+        return str(value)
+    props = getattr(event, "props", None)
+    if isinstance(props, dict):
+        for key in ("{DAV:}getetag", "getetag", "etag"):
+            value = props.get(key)
+            if value:
+                return str(value)
+    return None
 
 
 def _optional_attr(value: Any, name: str) -> str | None:
@@ -433,6 +457,7 @@ def _calendar_by_url(client: Any, calendar_url: str) -> Any:
 
 
 def _event_by_url(client: Any, event_href: str) -> Any:
+    event_href = _remote_href(event_href)
     if hasattr(client, "event_by_url"):
         return client.event_by_url(event_href)
     for calendar in client.principal().calendars():
