@@ -43,6 +43,47 @@ class MCPContractTests(unittest.TestCase):
         self.assertTrue(result["search_annotations"].idempotentHint)
         self.assertFalse(result["search_annotations"].openWorldHint)
 
+    def test_calendar_write_tool_schemas_keep_nested_input_contract(self) -> None:
+        async def run() -> dict[str, object]:
+            tools = {tool.name: tool for tool in await self.server.list_tools()}
+            return {
+                "create": tools["icloud.calendar.create_event"].parameters,
+                "update": tools["icloud.calendar.update_event"].parameters,
+                "create_annotations": tools["icloud.calendar.create_event"].annotations,
+                "update_annotations": tools["icloud.calendar.update_event"].annotations,
+            }
+
+        result = asyncio.run(run())
+        create = result["create"]
+        update = result["update"]
+        create_input = create["properties"]["input"]
+        update_input = update["properties"]["input"]
+
+        self.assertEqual(create["required"], ["input"])
+        self.assertFalse(create["additionalProperties"])
+        self.assertEqual(create_input["required"], ["title", "start", "end", "timezone"])
+        self.assertEqual(create_input["properties"]["title"]["minLength"], 1)
+        self.assertEqual(create_input["properties"]["title"]["maxLength"], 200)
+        self.assertEqual(create_input["properties"]["attendees"]["items"]["additionalProperties"]["type"], "string")
+        self.assertEqual(create_input["properties"]["alarms"]["items"]["type"], "object")
+        self.assertEqual(create_input["properties"]["recurrence"]["default"], None)
+        self.assertEqual(create_input["properties"]["calendar_id"]["default"], None)
+        self.assertEqual(create_input["properties"]["request_id"]["default"], None)
+
+        self.assertEqual(update["required"], ["input"])
+        self.assertFalse(update["additionalProperties"])
+        self.assertEqual(update_input["required"], ["event_id", "patch"])
+        self.assertEqual(update_input["properties"]["patch"]["type"], "object")
+        self.assertTrue(update_input["properties"]["patch"]["additionalProperties"])
+        self.assertEqual(update_input["properties"]["scope"]["default"], "series")
+        self.assertEqual(update_input["properties"]["etag"]["default"], None)
+
+        for tool_annotations in [result["create_annotations"], result["update_annotations"]]:
+            self.assertFalse(tool_annotations.readOnlyHint)
+            self.assertFalse(tool_annotations.destructiveHint)
+            self.assertFalse(tool_annotations.idempotentHint)
+            self.assertTrue(tool_annotations.openWorldHint)
+
     def test_cursor_tools_return_deterministic_invalid_cursor_status(self) -> None:
         async def run() -> dict[str, object]:
             results = {}

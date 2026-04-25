@@ -31,10 +31,3 @@ class UpdateEventInput(BaseModel):
     etag: str | None = None
     scope: str = "series"
 
-
-class CalendarWriteResult(BaseModel):
-    """Calendar write result."""
-
-    status: str
-    event_id: str
-    etag: str | None
