@@ -8,8 +8,9 @@ from urllib.parse import urljoin
 from icloud_mcp.adapters.carddav_contacts import CardDAVContactsAdapter
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import tombstone_contact, upsert_addressbook, upsert_contact
+from icloud_mcp.db.contacts_repository import tombstone_contact, upsert_addressbook, upsert_contact
 from icloud_mcp.security.secrets import load_icloud_credentials
+from icloud_mcp.sync.capabilities import ContactsDeltaAdapter, supports_contacts_delta
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
 from icloud_mcp.util import utc_now
 
@@ -35,7 +36,7 @@ class ContactsSyncWorker:
 
         try:
             adapter = self.adapter or CardDAVContactsAdapter()
-            if hasattr(adapter, "discover_addressbooks") and hasattr(adapter, "sync_contact_changes"):
+            if supports_contacts_delta(adapter):
                 addressbooks, contacts, full_sync_books, deleted_hrefs = self._sync_with_tokens(
                     adapter, credentials.apple_id, credentials.app_password
                 )
@@ -102,7 +103,7 @@ class ContactsSyncWorker:
 
     def _sync_with_tokens(
         self,
-        adapter: CardDAVContactsAdapter,
+        adapter: ContactsDeltaAdapter,
         apple_id: str,
         app_password: str,
     ) -> tuple[list, list, set[str], list[str]]:

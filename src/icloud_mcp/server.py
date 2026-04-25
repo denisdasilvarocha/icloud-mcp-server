@@ -5,8 +5,11 @@ from __future__ import annotations
 from icloud_mcp import __version__
 from icloud_mcp.config import Settings
 from icloud_mcp.dashboard import DashboardRuntime
+from icloud_mcp.db.cache_state import ensure_defaults
+from icloud_mcp.db.calendar_repository import view_event
 from icloud_mcp.db.connection import Database, open_db
-from icloud_mcp.db.repositories import ensure_defaults, view_contact, view_event, view_mail
+from icloud_mcp.db.contacts_repository import view_contact
+from icloud_mcp.db.mail_repository import view_mail
 from icloud_mcp.sync.scheduler import SyncScheduler
 from icloud_mcp.tools.calendar_tools import register_calendar_tools
 from icloud_mcp.tools.contact_tools import register_contact_tools

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from icloud_mcp.adapters.imap_mail import IMAPMailAdapter
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import (
+from icloud_mcp.db.mail_repository import (
     mailboxes_for_backfill,
     tombstone_mail_message_by_uid,
     update_mailbox_state,
@@ -15,6 +15,7 @@ from icloud_mcp.db.repositories import (
     upsert_mailbox,
 )
 from icloud_mcp.security.secrets import load_icloud_credentials
+from icloud_mcp.sync.capabilities import supports_mail_incremental
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
 from icloud_mcp.util import utc_now
 
@@ -40,9 +41,8 @@ class MailSyncWorker:
 
         try:
             adapter = self.adapter or IMAPMailAdapter()
-            sync_incremental = getattr(adapter, "sync_incremental", None)
-            if sync_incremental:
-                delta = sync_incremental(
+            if supports_mail_incremental(adapter):
+                delta = adapter.sync_incremental(
                     apple_id=credentials.apple_id,
                     app_password=credentials.app_password,
                     mailbox_states=_mailbox_states(self.db),

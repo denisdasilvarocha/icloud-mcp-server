@@ -12,8 +12,8 @@ from typing import Any
 
 from icloud_mcp import __version__
 from icloud_mcp.config import Settings
+from icloud_mcp.db.cache_state import sync_status
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import sync_status
 from icloud_mcp.observability.metrics import metrics_snapshot
 from icloud_mcp.sync.scheduler import SyncScheduler
 from icloud_mcp.util import utc_now

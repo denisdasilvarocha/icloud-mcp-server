@@ -9,9 +9,9 @@ from pydantic import Field
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import list_mail, view_mail
+from icloud_mcp.db.mail_repository import list_mail, view_mail
+from icloud_mcp.tools.boundary import bounded_int, cursor_offset, decode_cursor_or_error, minimum_int, not_found
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
-from icloud_mcp.util import cursor_error, decode_cursor
 
 
 def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
@@ -28,18 +28,17 @@ def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
     ) -> dict:
         """List compact mail rows from local cache."""
 
-        try:
-            cursor_payload = decode_cursor(cursor, settings.cursor_secret)
-        except ValueError as exc:
-            return cursor_error(exc)
+        cursor_payload, error = decode_cursor_or_error(cursor, settings.cursor_secret)
+        if error:
+            return error
         return list_mail(
             db,
             mailbox=mailbox,
             after=after.isoformat() if after else None,
             before=before.isoformat() if before else None,
             sender=from_email,
-            limit=max(1, min(limit, 100)),
-            offset=int(cursor_payload.get("offset", 0)),
+            limit=bounded_int(limit, minimum=1, maximum=100),
+            offset=cursor_offset(cursor_payload),
             cursor_secret=settings.cursor_secret,
         )
 
@@ -57,7 +56,7 @@ def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
             db,
             message_id=message_id,
             include=requested,
-            max_body_chars=max(1, min(max_body_chars or settings.mail_body_view_chars, 20000)),
-            body_offset=max(0, body_offset),
+            max_body_chars=bounded_int(max_body_chars or settings.mail_body_view_chars, minimum=1, maximum=20000),
+            body_offset=minimum_int(body_offset, 0),
         )
-        return result or {"status": "not_found", "message_id": message_id}
+        return result or not_found("message_id", message_id)

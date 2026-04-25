@@ -6,18 +6,18 @@ from datetime import datetime
 from typing import Any
 
 from icloud_mcp.config import Settings
+from icloud_mcp.db.cache_state import freshness, freshness_status, index_generation
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import (
-    freshness,
-    freshness_status,
-    index_generation,
+from icloud_mcp.db.search_repository import (
     person_alias_terms,
     query_cache_get,
     query_cache_set,
     search_documents,
 )
-from icloud_mcp.indexing.query_planner import plan_query
-from icloud_mcp.util import compact_json, next_cursor, normalize_text, sha256_text, tokenize
+from icloud_mcp.services.search_policy import _external_domains, _refresh_status, resolve_search_policy
+from icloud_mcp.util import next_cursor, tokenize
+
+__all__ = ["SearchService", "answer_hints", "_external_domains", "_refresh_status"]
 
 
 class SearchService:
@@ -40,43 +40,28 @@ class SearchService:
         freshness_policy: str,
         cursor_payload: dict[str, Any],
     ) -> dict[str, Any]:
-        plan = plan_query(query)
-        selected_domains = list(domains) if domains else _external_domains(plan.domains)
-        db_domains = ["contact" if domain == "contacts" else domain for domain in selected_domains]
-        safe_limit = max(1, min(limit, 50))
-        offset = int(cursor_payload.get("offset", 0))
-        planned_people = [person] if person else plan.people or []
-        person_terms = []
-        for planned_person in planned_people:
-            person_terms.extend(person_alias_terms(self.db, planned_person))
-        effective_query = " ".join(part for part in [query, " ".join(person_terms)] if part).strip()
-        effective_start = start.isoformat() if start else plan.start
-        effective_end = end.isoformat() if end else plan.end
-        generation = index_generation(self.db)
-        cache_key = sha256_text(
-            compact_json(
-                {
-                    "query": query,
-                    "domains": selected_domains,
-                    "start": effective_start,
-                    "end": effective_end,
-                    "person": person,
-                    "limit": safe_limit,
-                    "include_body_snippets": include_body_snippets,
-                    "cursor": cursor_payload,
-                    "plan": plan.__dict__,
-                }
-            )
+        policy = resolve_search_policy(
+            query=query,
+            domains=domains,
+            start=start,
+            end=end,
+            person=person,
+            limit=limit,
+            include_body_snippets=include_body_snippets,
+            cursor_payload=cursor_payload,
+            snippet_chars=self.settings.snippet_chars,
+            alias_resolver=lambda planned_person: person_alias_terms(self.db, planned_person),
         )
+        generation = index_generation(self.db)
         freshness_meta = freshness_status(self.db, self.settings.stale_after_seconds)
         refresh_status = _refresh_status(freshness_policy, freshness_meta)
         if freshness_policy != "refresh_if_stale":
-            cached = query_cache_get(self.db, cache_key, generation)
+            cached = query_cache_get(self.db, policy.cache_key, generation)
             if cached:
                 cached["next_cursor"] = next_cursor(
-                    offset,
+                    policy.offset,
                     len(cached.get("results", [])),
-                    safe_limit,
+                    policy.safe_limit,
                     self.settings.cursor_secret,
                     {"index_generation": generation},
                     has_more=bool(cached.get("next_cursor")),
@@ -86,45 +71,45 @@ class SearchService:
 
         rows = search_documents(
             self.db,
-            query=effective_query,
-            domains=db_domains,
-            limit=safe_limit + 1,
-            offset=offset,
-            snippet_chars=self.settings.snippet_chars if include_body_snippets else 160,
-            start=effective_start,
-            end=effective_end,
-            person=person or (planned_people[0] if planned_people else None),
+            query=policy.effective_query,
+            domains=policy.db_domains,
+            limit=policy.safe_limit + 1,
+            offset=policy.offset,
+            snippet_chars=policy.snippet_chars,
+            start=policy.effective_start,
+            end=policy.effective_end,
+            person=policy.person_filter,
         )
-        has_more = len(rows) > safe_limit
-        rows = rows[:safe_limit]
+        has_more = len(rows) > policy.safe_limit
+        rows = rows[: policy.safe_limit]
         response = {
             "content": _compact_content(rows),
             "structured_content": {"results": rows},
             "query": query,
-            "normalized_query": normalize_text(" ".join(tokenize(query))),
-            "query_plan": plan.__dict__,
+            "normalized_query": policy.normalized_query,
+            "query_plan": policy.plan.__dict__,
             "filters": {
-                "domains": selected_domains,
-                "start": effective_start,
-                "end": effective_end,
+                "domains": policy.selected_domains,
+                "start": policy.effective_start,
+                "end": policy.effective_end,
                 "person": person,
                 "freshness": freshness_policy,
             },
             "index_freshness": freshness(self.db),
             "freshness_status": freshness_meta,
-            "answer_hints": answer_hints(query, rows, plan.intent),
+            "answer_hints": answer_hints(query, rows, policy.plan.intent),
             "results": rows,
             "next_cursor": next_cursor(
-                offset,
+                policy.offset,
                 len(rows),
-                safe_limit,
+                policy.safe_limit,
                 self.settings.cursor_secret,
                 {"index_generation": generation},
                 has_more=has_more,
             ),
             "meta": {"cache": "miss", "index_generation": generation, "refresh": refresh_status},
         }
-        query_cache_set(self.db, cache_key, response, generation, ttl_seconds=self.settings.query_cache_ttl_seconds)
+        query_cache_set(self.db, policy.cache_key, response, generation, ttl_seconds=self.settings.query_cache_ttl_seconds)
         return response
 
 
@@ -157,19 +142,6 @@ def answer_hints(query: str, results: list[dict[str, Any]], intent: str = "gener
     if len(results) > 1 and abs(float(results[0].get("score", 0.0)) - float(results[1].get("score", 0.0))) < 0.05:
         return [{"type": "ambiguous_candidates", "source_ids": [row["id"] for row in results[:3]]}]
     return []
-
-
-def _external_domains(domains: list[str]) -> list[str]:
-    return ["contacts" if domain == "contact" else domain for domain in domains]
-
-
-def _refresh_status(freshness_policy: str, statuses: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    if freshness_policy != "refresh_if_stale":
-        return {"status": "not_requested"}
-    stale = {domain: value for domain, value in statuses.items() if value.get("status") in {"stale", "never_synced"}}
-    if not stale:
-        return {"status": "fresh"}
-    return {"status": "refresh_unavailable_inline", "stale_domains": sorted(stale), "reason": "background sync only"}
 
 
 def _compact_content(rows: list[dict[str, Any]]) -> str:

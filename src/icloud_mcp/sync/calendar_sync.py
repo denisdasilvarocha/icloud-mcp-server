@@ -8,9 +8,14 @@ from urllib.parse import urldefrag, urljoin
 
 from icloud_mcp.adapters.caldav_calendar import CalDAVCalendarAdapter
 from icloud_mcp.config import Settings
+from icloud_mcp.db.calendar_repository import (
+    tombstone_calendar_object,
+    upsert_calendar_collection,
+    upsert_calendar_object,
+)
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import tombstone_calendar_object, upsert_calendar_collection, upsert_calendar_object
 from icloud_mcp.security.secrets import load_icloud_credentials
+from icloud_mcp.sync.capabilities import CalendarDeltaAdapter, supports_calendar_delta
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
 from icloud_mcp.util import utc_now
 
@@ -39,7 +44,7 @@ class CalendarSyncWorker:
             now_dt = datetime.now(tz=UTC)
             start = (now_dt - timedelta(days=31 * self.settings.calendar_past_months)).date()
             end = (now_dt + timedelta(days=31 * self.settings.calendar_future_months)).date()
-            if hasattr(adapter, "discover") and hasattr(adapter, "sync_event_changes"):
+            if supports_calendar_delta(adapter):
                 calendars, events, full_sync_calendar_ids, deleted_hrefs = self._sync_with_tokens(
                     adapter, credentials.apple_id, credentials.app_password, start, end
                 )
@@ -131,7 +136,7 @@ class CalendarSyncWorker:
 
     def _sync_with_tokens(
         self,
-        adapter: CalDAVCalendarAdapter,
+        adapter: CalendarDeltaAdapter,
         apple_id: str,
         app_password: str,
         start: date,

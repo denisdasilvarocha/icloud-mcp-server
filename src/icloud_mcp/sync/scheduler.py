@@ -11,7 +11,7 @@ from typing import Any
 
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import cleanup_local_index
+from icloud_mcp.db.search_repository import cleanup_local_index
 from icloud_mcp.indexing.embeddings import EmbeddingWorker
 from icloud_mcp.observability.metrics import record_metric
 from icloud_mcp.sync.calendar_sync import CalendarSyncWorker

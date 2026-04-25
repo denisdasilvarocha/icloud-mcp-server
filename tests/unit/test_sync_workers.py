@@ -30,6 +30,11 @@ from icloud_mcp.db.repositories import (
     upsert_contact,
 )
 from icloud_mcp.sync.calendar_sync import CalendarSyncWorker
+from icloud_mcp.sync.capabilities import (
+    supports_calendar_delta,
+    supports_contacts_delta,
+    supports_mail_incremental,
+)
 from icloud_mcp.sync.contacts_sync import ContactsSyncWorker
 from icloud_mcp.sync.mail_sync import MailBackfillWorker, MailSyncWorker
 from icloud_mcp.sync.scheduler import SyncScheduler
@@ -392,6 +397,14 @@ class SyncWorkerTests(unittest.TestCase):
         self.assertIn("contact_1", ids)
         self.assertIn("cal_evt_1", ids)
         self.assertIn("mail_msg_1", ids)
+
+    def test_sync_adapter_capability_seams_are_explicit(self) -> None:
+        self.assertFalse(supports_mail_incremental(FakeMailAdapter()))
+        self.assertTrue(supports_mail_incremental(FakeMailIncrementalAdapter()))
+        self.assertFalse(supports_calendar_delta(FakeCalendarAdapter()))
+        self.assertTrue(supports_calendar_delta(FakeCalendarDeltaAdapter()))
+        self.assertFalse(supports_contacts_delta(FakeContactsAdapter()))
+        self.assertTrue(supports_contacts_delta(FakeContactsDeltaAdapter()))
 
     def test_mail_backfill_syncs_older_mail_batch(self) -> None:
         MailSyncWorker(self.db, self.settings, FakeMailAdapter()).run_once()

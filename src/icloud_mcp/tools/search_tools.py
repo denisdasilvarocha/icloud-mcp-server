@@ -10,7 +10,7 @@ from fastmcp.tools import ToolResult
 from icloud_mcp.config import Settings
 from icloud_mcp.db.connection import Database
 from icloud_mcp.services.search import SearchService
-from icloud_mcp.util import cursor_error, decode_cursor
+from icloud_mcp.tools.boundary import decode_cursor_or_error
 
 READ_ANNOTATIONS = {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": False}
 
@@ -32,10 +32,8 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
     ) -> ToolResult:
         """Search local iCloud Mail, Calendar, and Contacts cache."""
 
-        try:
-            cursor_payload = decode_cursor(cursor, settings.cursor_secret)
-        except ValueError as exc:
-            error = cursor_error(exc)
+        cursor_payload, error = decode_cursor_or_error(cursor, settings.cursor_secret)
+        if error:
             return ToolResult(content="", structured_content=error, meta=error)
         result = SearchService(db, settings).search(
             query=query,
@@ -46,7 +44,7 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
             limit=limit,
             include_body_snippets=include_body_snippets,
             freshness_policy=freshness,
-            cursor_payload=cursor_payload,
+            cursor_payload=cursor_payload or {"offset": 0},
         )
         return ToolResult(
             content=result["content"],

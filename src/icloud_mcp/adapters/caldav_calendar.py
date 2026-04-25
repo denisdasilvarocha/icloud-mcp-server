@@ -12,7 +12,7 @@ from xml.sax.saxutils import escape
 from defusedxml import ElementTree
 from icalendar import Calendar
 
-from icloud_mcp.db.repositories import build_ics
+from icloud_mcp.db.calendar_repository import build_ics
 
 DAV_NS = "DAV:"
 NS = {"d": DAV_NS}

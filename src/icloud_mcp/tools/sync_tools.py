@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from icloud_mcp.config import Settings
+from icloud_mcp.db.cache_state import sync_status
 from icloud_mcp.db.connection import Database
-from icloud_mcp.db.repositories import sync_status
 from icloud_mcp.observability.metrics import metrics_snapshot
 from icloud_mcp.sync.scheduler import SyncScheduler
+from icloud_mcp.tools.boundary import bounded_int
 from icloud_mcp.tools.search_tools import READ_ANNOTATIONS
 
 SYNC_ANNOTATIONS = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
@@ -37,4 +38,4 @@ def register_sync_tools(
     async def metrics_snapshot_tool(limit: int = 100) -> dict:
         """Return compact local metrics snapshot."""
 
-        return metrics_snapshot(db, limit=max(1, min(limit, 500)))
+        return metrics_snapshot(db, limit=bounded_int(limit, minimum=1, maximum=500))
