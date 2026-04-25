@@ -18,10 +18,7 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-14">
         <div class="flex items-center gap-3">
-          <div class="flex h-8 w-8 items-center justify-center bg-slate-900 rounded-md text-white">
-            <iconify-icon icon="solar:cloud-linear" class="text-lg" stroke-width="1.5"></iconify-icon>
-          </div>
-          <span class="font-medium tracking-tighter text-lg uppercase text-slate-900">IMCP</span>
+          <span class="font-medium tracking-tighter text-lg text-slate-900">iCloud MCP Server</span>
         </div>
         <div class="flex items-center gap-4">
           <div class="flex items-center gap-2 text-xs text-slate-500">
@@ -168,43 +165,29 @@
     };
 
     const text = (val, empty = "None") => val == null || val === "" ? empty : val;
+    const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    }[char]));
     const when = (val, empty = "Not scheduled") => val ? new Date(val).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : empty;
     const age = (sec) => sec == null ? "Never" : `${Math.round(sec / 60)}m ago`;
     const formatName = (str) => str.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 
     const listItem = (label, value) => `
       <li class="flex items-center justify-between px-5 py-3 hover:bg-slate-50 transition-colors">
-        <span class="text-slate-500 text-sm">${label}</span>
-        <span class="font-normal text-slate-900 text-sm text-right">${text(value)}</span>
+        <span class="text-slate-500 text-sm">${escapeHtml(label)}</span>
+        <span class="font-normal text-slate-900 text-sm text-right">${escapeHtml(text(value))}</span>
       </li>`;
 
-    const dummyData = {
-      generated_at: new Date().toISOString(),
-      health: { status: "healthy", reason: "All systems operational" },
-      sync: {
-        freshness_status: {
-          mail: { status: "healthy", age_seconds: 420 },
-          calendar: { status: "syncing", age_seconds: 90 },
-          contacts: { status: "stale", age_seconds: 8200 }
-        },
-        workers: {
-          mail_sync_worker: { status: "idle", last_sync_at: "2026-04-25T08:58:00Z", retry_count: 0, backoff_until: null, progress_cursor: "uid:88421" },
-          calendar_sync_worker: { status: "running", last_sync_at: "2026-04-25T08:54:00Z", retry_count: 0, backoff_until: null, progress_cursor: "page:3" },
-          contacts_sync_worker: { status: "error", last_sync_at: "2026-04-25T06:22:00Z", retry_count: 2, backoff_until: "2026-04-25T09:20:00Z", progress_cursor: "batch:12" }
-        }
-      },
-      activity: { live: true, running_workers: ["calendar_sync_worker"], attention_workers: ["contacts_sync_worker"] },
-      scheduler: { background_running: true, next_run_at: "2026-04-25T09:15:00Z", last_cycle_started_at: "2026-04-25T08:55:00Z" },
-      manual_sync: { running: false },
-      counts: { mail_messages: 18432, calendar_events: 318, contacts: 1248, search_documents: 19998 },
-      metrics: { totals: { sync_cycles: 128, imported_items: 4387 } },
-      info: { version: "0.1.0-dev", database_path: "~/.icloud-mcp/cache.db" }
-    };
-
-    function loadStatus() {
-      const data = JSON.parse(JSON.stringify(dummyData));
-      data.generated_at = new Date().toISOString();
-      render(data);
+    async function loadStatus() {
+      const response = await fetch("/api/status", { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`Status request failed: ${response.status}`);
+      }
+      render(await response.json());
     }
 
     function render(data) {
@@ -214,7 +197,7 @@
       const hStyle = getStatusColor(data.health.status);
       document.getElementById("healthStatusTitle").textContent = data.health.status;
       document.getElementById("healthStatusTitle").className = `text-xl font-medium tracking-tight capitalize ${hStyle.text}`;
-      document.getElementById("healthReasonText").textContent = data.health.reason;
+      document.getElementById("healthReasonText").textContent = text(data.health.reason);
 
       let hIcon = document.getElementById("healthIcon");
       hIcon.setAttribute("icon", hStyle.icon);
@@ -241,16 +224,16 @@
         const style = getStatusColor(worker.status);
         return `
         <tr class="hover:bg-slate-50 transition-colors">
-          <td class="px-5 py-3 text-sm text-slate-900 font-normal">${formatName(name.replace('_sync_worker', ''))}</td>
+          <td class="px-5 py-3 text-sm text-slate-900 font-normal">${escapeHtml(formatName(name.replace('_sync_worker', '')))}</td>
           <td class="px-5 py-3">
              <div class="flex items-center gap-2">
                <div class="w-1.5 h-1.5 rounded-full ${style.dot}"></div>
-               <span class="text-xs font-normal capitalize text-slate-700">${worker.status}</span>
+               <span class="text-xs font-normal capitalize text-slate-700">${escapeHtml(worker.status)}</span>
              </div>
           </td>
-          <td class="px-5 py-3 text-sm text-slate-500">${when(worker.last_sync_at, "Never")}</td>
-          <td class="px-5 py-3 text-sm text-slate-500">${worker.retry_count || 0}</td>
-          <td class="px-5 py-3 text-xs text-slate-400 font-mono">${text(worker.progress_cursor, "N/A")}</td>
+          <td class="px-5 py-3 text-sm text-slate-500">${escapeHtml(when(worker.last_sync_at, "Never"))}</td>
+          <td class="px-5 py-3 text-sm text-slate-500">${escapeHtml(worker.retry_count || 0)}</td>
+          <td class="px-5 py-3 text-xs text-slate-400 font-mono">${escapeHtml(text(worker.progress_cursor, "N/A"))}</td>
         </tr>
       `}).join("");
 
@@ -262,11 +245,11 @@
             <div class="flex items-center gap-3">
                <iconify-icon icon="${style.icon}" class="text-lg ${style.text}"></iconify-icon>
                <div>
-                 <div class="font-normal text-slate-900 text-sm">${formatName(name)}</div>
-                 <div class="text-xs text-slate-500 mt-0.5">${age(item.age_seconds)}</div>
+                 <div class="font-normal text-slate-900 text-sm">${escapeHtml(formatName(name))}</div>
+                 <div class="text-xs text-slate-500 mt-0.5">${escapeHtml(age(item.age_seconds))}</div>
                </div>
             </div>
-            <span class="text-xs capitalize text-slate-500">${item.status}</span>
+            <span class="text-xs capitalize text-slate-500">${escapeHtml(item.status)}</span>
           </div>
         `;
       }).join("");
@@ -282,20 +265,27 @@
       document.getElementById("infoMetricsList").innerHTML = combinedInfo.map(([k,v]) => listItem(k, v)).join("");
     }
 
-    document.getElementById("syncBtn").addEventListener("click", () => {
-      document.getElementById("syncBtn").disabled = true;
-      const data = JSON.parse(JSON.stringify(dummyData));
-      data.generated_at = new Date().toISOString();
-      data.manual_sync.running = true;
-      data.activity.live = true;
-      render(data);
-      setTimeout(loadStatus, 2000);
+    document.getElementById("syncBtn").addEventListener("click", async () => {
+      const syncBtn = document.getElementById("syncBtn");
+      syncBtn.disabled = true;
+      try {
+        const response = await fetch("/api/sync-now", { method: "POST" });
+        if (!response.ok) {
+          throw new Error(`Sync request failed: ${response.status}`);
+        }
+        await loadStatus();
+      } catch (error) {
+        console.error(error);
+        syncBtn.disabled = false;
+      }
     });
 
-    document.getElementById("refreshBtn").addEventListener("click", loadStatus);
+    document.getElementById("refreshBtn").addEventListener("click", () => {
+      loadStatus().catch(console.error);
+    });
 
-    loadStatus();
-    setInterval(loadStatus, 5000);
+    loadStatus().catch(console.error);
+    setInterval(() => loadStatus().catch(console.error), 5000);
   </script>
 
 
