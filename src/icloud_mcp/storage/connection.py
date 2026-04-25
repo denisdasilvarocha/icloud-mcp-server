@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -269,17 +271,20 @@ class Database:
         self.connection = connection
         self.connection.row_factory = sqlite3.Row
         self._lock = RLock()
+        self._transaction_depth = 0
 
     def execute(self, sql: str, parameters: tuple[Any, ...] = ()) -> sqlite3.Cursor:
         with self._lock:
             cursor = self.connection.execute(sql, parameters)
-            self.connection.commit()
+            if self._transaction_depth == 0:
+                self.connection.commit()
             return cursor
 
     def executemany(self, sql: str, parameters: list[tuple[Any, ...]]) -> None:
         with self._lock:
             self.connection.executemany(sql, parameters)
-            self.connection.commit()
+            if self._transaction_depth == 0:
+                self.connection.commit()
 
     def query(self, sql: str, parameters: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         with self._lock:
@@ -293,7 +298,22 @@ class Database:
     def executescript(self, script: str) -> None:
         with self._lock:
             self.connection.executescript(script)
-            self.connection.commit()
+            if self._transaction_depth == 0:
+                self.connection.commit()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        with self._lock:
+            self._transaction_depth += 1
+            try:
+                yield
+            except Exception:
+                self.connection.rollback()
+                raise
+            finally:
+                self._transaction_depth -= 1
+            if self._transaction_depth == 0:
+                self.connection.commit()
 
     def close(self) -> None:
         with self._lock:
@@ -356,6 +376,11 @@ def _ensure_indexes(db: Database) -> None:
             {"mailbox_id", "deleted_at", "date"},
             "CREATE INDEX IF NOT EXISTS idx_mail_messages_mailbox_deleted_date "
             "ON mail_messages(mailbox_id, deleted_at, date DESC)",
+        ),
+        (
+            "mailboxes",
+            {"name", "id"},
+            "CREATE INDEX IF NOT EXISTS idx_mailboxes_name_id ON mailboxes(name, id)",
         ),
         (
             "calendar_occurrences",

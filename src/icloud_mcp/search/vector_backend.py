@@ -21,6 +21,9 @@ USING vec0(
 def ensure_vector_backend(db: Database) -> bool:
     """Load sqlite-vec and ensure the vector table exists."""
 
+    cached = getattr(db, "_vector_backend_available", None)
+    if cached is not None:
+        return bool(cached)
     with db._lock:
         try:
             db.connection.enable_load_extension(True)
@@ -28,10 +31,12 @@ def ensure_vector_backend(db: Database) -> bool:
             db.connection.execute(VEC_TABLE_SQL)
             db.connection.commit()
         except Exception:
+            db._vector_backend_available = False
             return False
         finally:
             with suppress(Exception):
                 db.connection.enable_load_extension(False)
+    db._vector_backend_available = True
     return True
 
 

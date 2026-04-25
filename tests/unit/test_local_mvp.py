@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from icloud_mcp.calendar.cache import (
     create_calendar_event,
@@ -759,6 +760,14 @@ END:VCALENDAR
 
         self.assertEqual(results, [])
 
+    def test_unknown_lexical_miss_skips_semantic_fallback(self) -> None:
+        with patch("icloud_mcp.search.repository.query_similar_chunks", side_effect=AssertionError("semantic called")):
+            results = search_documents(
+                self.db, query="zzqxjv-no-such-token", domains=["mail"], limit=5, offset=0, snippet_chars=300
+            )
+
+        self.assertEqual(results, [])
+
     def test_embedding_worker_batches_pending_chunks(self) -> None:
         for index in range(251):
             self.db.execute(
@@ -809,11 +818,19 @@ END:VCALENDAR
     def test_hot_path_indexes_exist(self) -> None:
         indexes = {
             row["name"]
-            for table in ["mail_messages", "calendar_occurrences", "search_documents", "contacts", "query_cache"]
+            for table in [
+                "mail_messages",
+                "mailboxes",
+                "calendar_occurrences",
+                "search_documents",
+                "contacts",
+                "query_cache",
+            ]
             for row in self.db.query(f"PRAGMA index_list({table})")
         }
 
         self.assertIn("idx_mail_messages_mailbox_deleted_date", indexes)
+        self.assertIn("idx_mailboxes_name_id", indexes)
         self.assertIn("idx_calendar_occurrences_start_end_event", indexes)
         self.assertIn("idx_search_documents_domain_deleted_object", indexes)
         self.assertIn("idx_contacts_addressbook_deleted_display", indexes)
