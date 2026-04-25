@@ -133,7 +133,7 @@ ensure_project_ready() {
   local uv_bin="$2"
   printf 'Checking MCP server imports...\n'
   "$uv_bin" run --project "$root" python - <<'PY' >/dev/null
-from icloud_mcp.server import create_server
+from icloud_mcp.mcp.server import create_server
 print(create_server)
 PY
 }
@@ -147,7 +147,7 @@ store_keychain_credentials() {
   "$uv_bin" run --project "$root" python - "$ICLOUD_SETUP_APPLE_ID" "$ICLOUD_SETUP_APP_PASSWORD" <<'PY'
 import sys
 
-from icloud_mcp.security.secrets import store_icloud_credentials
+from icloud_mcp.platform.secrets import store_icloud_credentials
 
 store_icloud_credentials(sys.argv[1], sys.argv[2])
 PY
