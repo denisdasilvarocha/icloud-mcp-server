@@ -49,11 +49,7 @@ def resolve_search_policy(
     plan = plan_query(query)
     selected_domains = list(domains) if domains else _external_domains(plan.domains)
     planned_people = [person] if person else plan.people or []
-    person_terms = [
-        alias
-        for planned_person in planned_people
-        for alias in alias_resolver(planned_person)
-    ]
+    person_terms = [alias for planned_person in planned_people for alias in alias_resolver(planned_person)]
     effective_query = " ".join(part for part in [query, " ".join(person_terms)] if part).strip()
     effective_start = start.isoformat() if start else plan.start
     effective_end = end.isoformat() if end else plan.end

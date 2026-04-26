@@ -30,4 +30,3 @@ class UpdateEventInput(BaseModel):
     patch: dict[str, Any]
     etag: str | None = None
     scope: str = "series"
-

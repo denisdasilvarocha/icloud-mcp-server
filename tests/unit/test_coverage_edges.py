@@ -279,6 +279,8 @@ class CoverageEdgesTests(unittest.TestCase):
         self.assertEqual(delta.deleted[0].uid, 4)
         self.assertEqual([message.uid for message in empty_cache_delta.messages], [1, 2])
         self.assertEqual(bounded_first_sync, [1, 2])
+        self.assertTrue(adapter.client.fetch_requests)
+        self.assertTrue(all("BODY.PEEK[]" in request for request in adapter.client.fetch_requests))
         self.assertIn(["SINCE", date(2026, 4, 1)], adapter.client.searches)
         self.assertEqual(mailbox.backfill_status, "complete")
         self.assertGreaterEqual(len(older), 1)
@@ -1590,6 +1592,7 @@ class _FakeIMAPClient:
     def __init__(self, uid_validity: bytes = b"1") -> None:
         self.uid_validity = uid_validity
         self.searches: list[list[object]] = []
+        self.fetch_requests: list[list[str]] = []
 
     def __enter__(self) -> _FakeIMAPClient:
         return self
@@ -1616,10 +1619,11 @@ class _FakeIMAPClient:
             return [1]
         return [1, 2]
 
-    def fetch(self, uids: list[int], data: list[bytes]) -> dict[int, dict[bytes, object]]:
+    def fetch(self, uids: list[int], data: list[str]) -> dict[int, dict[bytes, object]]:
+        self.fetch_requests.append(data)
         return {
             uid: {
-                b"BODY[]": (
+                b"BODY.PEEK[]": (
                     f"From: Sender <s@example.com>\nTo: Me <me@example.com>\nSubject: {'Recent' if uid > 1 else 'Old'}\n"
                     "Date: Fri, 24 Apr 2026 09:00:00 +0000\n\nbody"
                 ).encode(),
@@ -1635,7 +1639,7 @@ class _FakeIMAPClient:
 
 
 class _FakeIMAPClientMissingRaw(_FakeIMAPClient):
-    def fetch(self, uids: list[int], data: list[bytes]) -> dict[int, dict[bytes, object]]:
+    def fetch(self, uids: list[int], data: list[str]) -> dict[int, dict[bytes, object]]:
         return {uid: {} for uid in uids}
 
 

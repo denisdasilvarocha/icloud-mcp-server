@@ -110,7 +110,9 @@ class SearchService:
             ),
             "meta": {"cache": "miss", "index_generation": generation, "refresh": refresh_status},
         }
-        query_cache_set(self.db, policy.cache_key, response, generation, ttl_seconds=self.settings.query_cache_ttl_seconds)
+        query_cache_set(
+            self.db, policy.cache_key, response, generation, ttl_seconds=self.settings.query_cache_ttl_seconds
+        )
         return response
 
 
