@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import secrets
 import socket
 import threading
 from dataclasses import dataclass, field
+from hmac import compare_digest
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from icloud_mcp import __version__
 from icloud_mcp.platform.config import Settings
@@ -25,9 +28,12 @@ DASHBOARD_WRITE_ANNOTATIONS = {
     "idempotentHint": False,
     "openWorldHint": False,
 }
+DASHBOARD_TOKEN_HEADER = "X-iCloud-MCP-Dashboard-Token"
+LOOPBACK_DASHBOARD_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 DASHBOARD_HTML = r"""<html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
 <title>iCloud MCP Dashboard</title>
 <script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
@@ -225,8 +231,20 @@ DASHBOARD_HTML = r"""<html lang="en"><head>
         </div>`;
     };
 
+    const dashboardToken = new URLSearchParams(window.location.search).get("token") || "";
+    if (dashboardToken) {
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    const apiFetch = (path, options = {}) => {
+      const headers = new Headers(options.headers || {});
+      if (dashboardToken) {
+        headers.set("X-iCloud-MCP-Dashboard-Token", dashboardToken);
+      }
+      return fetch(path, { ...options, headers });
+    };
+
     async function loadStatus() {
-      const response = await fetch("/api/status", { cache: "no-store" });
+      const response = await apiFetch("/api/status", { cache: "no-store" });
       if (!response.ok) {
         throw new Error(`Status request failed: ${response.status}`);
       }
@@ -312,7 +330,7 @@ DASHBOARD_HTML = r"""<html lang="en"><head>
       const syncBtn = document.getElementById("syncBtn");
       syncBtn.disabled = true;
       try {
-        const response = await fetch("/api/sync-now", { method: "POST" });
+        const response = await apiFetch("/api/sync-now", { method: "POST" });
         if (!response.ok) {
           throw new Error(`Sync request failed: ${response.status}`);
         }
@@ -433,6 +451,7 @@ class DashboardRuntime:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _server: ThreadingHTTPServer | None = None
     _thread: threading.Thread | None = None
+    _dashboard_token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     _manual_sync_lock: threading.Lock = field(default_factory=threading.Lock)
     _manual_state_lock: threading.Lock = field(default_factory=threading.Lock)
     _manual_sync_state: dict[str, Any] = field(
@@ -522,6 +541,7 @@ class DashboardRuntime:
             initializer()
 
     def _bind_server(self) -> ThreadingHTTPServer:
+        _ensure_loopback_dashboard_host(self.host)
         handler = _make_handler(self)
         port = self.default_port
         for candidate in range(port, port + 50):
@@ -534,7 +554,7 @@ class DashboardRuntime:
     def _status_unlocked(self) -> dict[str, Any]:
         running = self._server is not None
         port = self._server.server_address[1] if self._server else None
-        url = f"http://{self.host}:{port}/" if port else None
+        url = f"http://{self.host}:{port}/?token={self._dashboard_token}" if port else None
         return {"running": running, "host": self.host, "port": port, "url": url}
 
     def _manual_sync_snapshot(self) -> dict[str, Any]:
@@ -574,16 +594,24 @@ def _counts(db: Database) -> dict[str, int]:
 def _make_handler(runtime: DashboardRuntime) -> type[BaseHTTPRequestHandler]:
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if self.path in {"/", "/dashboard"}:
+            path = urlparse(self.path).path
+            if path in {"/", "/dashboard"}:
                 self._send_html(_dashboard_html())
                 return
-            if self.path == "/api/status":
+            if path == "/api/status":
+                if not self._authorized():
+                    self._send_json({"status": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                    return
                 self._send_json(runtime.snapshot())
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:
-            if self.path == "/api/sync-now":
+            path = urlparse(self.path).path
+            if path == "/api/sync-now":
+                if not self._authorized():
+                    self._send_json({"status": "unauthorized"}, status=HTTPStatus.UNAUTHORIZED)
+                    return
                 self._send_json(runtime.sync_now_background(), status=HTTPStatus.ACCEPTED)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -597,6 +625,8 @@ def _make_handler(runtime: DashboardRuntime) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
 
@@ -606,10 +636,24 @@ def _make_handler(runtime: DashboardRuntime) -> type[BaseHTTPRequestHandler]:
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
 
+        def _authorized(self) -> bool:
+            expected = runtime._dashboard_token
+            header_token = self.headers.get(DASHBOARD_TOKEN_HEADER, "")
+            query_token = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+            candidate = header_token or query_token
+            return bool(candidate) and compare_digest(candidate, expected)
+
     return DashboardHandler
+
+
+def _ensure_loopback_dashboard_host(host: str) -> None:
+    if host.strip().casefold() not in LOOPBACK_DASHBOARD_HOSTS:
+        raise RuntimeError("dashboard host must be loopback-only")
 
 
 def _dashboard_html() -> str:

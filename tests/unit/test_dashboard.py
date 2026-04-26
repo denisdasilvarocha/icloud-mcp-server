@@ -4,9 +4,11 @@ import asyncio
 import io
 import json
 import unittest
+from http import HTTPStatus
 from unittest.mock import patch
 
 from icloud_mcp.dashboard.runtime import (
+    DASHBOARD_TOKEN_HEADER,
     DashboardRuntime,
     DashboardSnapshotPresenter,
     _activity,
@@ -60,6 +62,7 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("icloud.dashboard.status", result["tool_names"])
         self.assertIn("icloud.dashboard.stop", result["tool_names"])
         self.assertTrue(result["first"]["running"])
+        self.assertIn("?token=", result["first"]["url"])
         self.assertEqual(result["first"]["url"], result["second"]["url"])
         self.assertEqual(result["status"]["url"], result["first"]["url"])
         self.assertFalse(result["stopped"]["running"])
@@ -129,6 +132,12 @@ class DashboardTests(unittest.TestCase):
         ):
             self.dashboard.start()
 
+    def test_dashboard_rejects_non_loopback_host(self) -> None:
+        dashboard = DashboardRuntime(self.db, self.settings, self.scheduler, host="0.0.0.0")
+
+        with self.assertRaisesRegex(RuntimeError, "loopback-only"):
+            dashboard.start()
+
     def test_handler_routes_and_response_writers(self) -> None:
         handler_type = _make_handler(self.dashboard)
         calls = []
@@ -137,12 +146,20 @@ class DashboardTests(unittest.TestCase):
         handler._send_html = lambda html: calls.append(("html", "iCloud MCP Dashboard" in html))
         handler._send_json = lambda payload, status=None: calls.append(("json", payload, status))
         handler.send_error = lambda status: calls.append(("error", status))
+        handler.headers = {}
         handler.path = "/"
         handler.do_GET()
         handler.path = "/api/status"
         handler.do_GET()
+        handler.headers = {DASHBOARD_TOKEN_HEADER: self.dashboard._dashboard_token}
+        handler.path = "/api/status"
+        handler.do_GET()
         handler.path = "/missing"
         handler.do_GET()
+        handler.headers = {}
+        handler.path = "/api/sync-now"
+        handler.do_POST()
+        handler.headers = {DASHBOARD_TOKEN_HEADER: self.dashboard._dashboard_token}
         handler.path = "/api/sync-now"
         handler.do_POST()
         handler.path = "/missing"
@@ -161,10 +178,28 @@ class DashboardTests(unittest.TestCase):
 
         self.assertEqual(calls[0], ("html", True))
         self.assertEqual(calls[1][0], "json")
-        self.assertEqual(calls[2][0], "error")
-        self.assertEqual(calls[3][0], "json")
-        self.assertEqual(calls[4][0], "error")
+        self.assertEqual(calls[1][2], HTTPStatus.UNAUTHORIZED)
+        self.assertEqual(calls[2][0], "json")
+        self.assertEqual(calls[3][0], "error")
+        self.assertEqual(calls[4][0], "json")
+        self.assertEqual(calls[4][2], HTTPStatus.UNAUTHORIZED)
+        self.assertEqual(calls[5][0], "json")
+        self.assertEqual(calls[6][0], "error")
         self.assertIn(b"ok", writer.wfile.getvalue())
+
+    def test_handler_accepts_query_token(self) -> None:
+        handler_type = _make_handler(self.dashboard)
+        calls = []
+        handler = object.__new__(handler_type)
+        handler._send_json = lambda payload, status=None: calls.append(("json", payload, status))
+        handler.send_error = lambda status: calls.append(("error", status))
+        handler.headers = {}
+
+        handler.path = f"/api/status?token={self.dashboard._dashboard_token}"
+        handler.do_GET()
+
+        self.assertEqual(calls[0][0], "json")
+        self.assertNotEqual(calls[0][2], HTTPStatus.UNAUTHORIZED)
 
     def test_scheduler_status(self) -> None:
         scheduler = SyncScheduler(self.db, self.settings)
@@ -209,6 +244,7 @@ class DashboardTests(unittest.TestCase):
         html = _dashboard_html()
 
         self.assertIn("const progressBar = (worker)", html)
+        self.assertIn("X-iCloud-MCP-Dashboard-Token", html)
         self.assertNotIn('text(worker.progress_cursor, "N/A")', html)
 
 
