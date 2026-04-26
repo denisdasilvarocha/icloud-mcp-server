@@ -68,8 +68,9 @@ class ContactsDeltaAdapter(Protocol):
         sync_token: str,
     ) -> tuple[ContactSyncResult, list[SyncedContact]]: ...
 
-    def sync_contacts(self, *, apple_id: str, app_password: str) -> tuple[list[SyncedAddressBook], list[SyncedContact]]:
-        ...
+    def sync_contacts(
+        self, *, apple_id: str, app_password: str
+    ) -> tuple[list[SyncedAddressBook], list[SyncedContact]]: ...
 
 
 def supports_mail_incremental(adapter: object) -> TypeGuard[IncrementalMailAdapter]:

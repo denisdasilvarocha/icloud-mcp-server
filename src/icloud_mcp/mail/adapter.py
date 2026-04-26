@@ -165,7 +165,9 @@ class IMAPMailAdapter:
                 highest_modseq = _string_value(select_info.get(b"HIGHESTMODSEQ"))
                 if state.get("uid_validity") and state.get("uid_validity") != uid_validity:
                     uids = [int(uid) for uid in client.search(["SINCE", since])]
-                    deleted.extend(DeletedMailMessage(mailbox_id=mailbox_id, uid=uid) for uid in state.get("known_uids", []))
+                    deleted.extend(
+                        DeletedMailMessage(mailbox_id=mailbox_id, uid=uid) for uid in state.get("known_uids", [])
+                    )
                 else:
                     uids = _incremental_uids(client, state, since=since)
                     known_uids = {int(uid) for uid in state.get("known_uids", [])}
@@ -245,9 +247,9 @@ def _fetch_messages(client: Any, mailbox_id: str, uids: list[int]) -> list[Synce
     if not uids:
         return []
     messages = []
-    response = client.fetch(uids, ["BODY[]", "FLAGS", "RFC822.SIZE", "INTERNALDATE"])
+    response = client.fetch(uids, ["BODY.PEEK[]", "FLAGS", "RFC822.SIZE", "INTERNALDATE"])
     for uid, data in response.items():
-        raw = data.get(b"BODY[]") or data.get(b"RFC822")
+        raw = data.get(b"BODY.PEEK[]") or data.get(b"BODY[]") or data.get(b"RFC822")
         if not raw:
             continue
         messages.append(
@@ -481,7 +483,9 @@ def _message_date(message: Message, internal_date: Any) -> str:
 
 
 def _has_attachments(message: Message) -> bool:
-    return any(_header_text(part.get("Content-Disposition")).lower().startswith("attachment") for part in message.walk())
+    return any(
+        _header_text(part.get("Content-Disposition")).lower().startswith("attachment") for part in message.walk()
+    )
 
 
 def _references(value: str) -> list[str]:

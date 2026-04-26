@@ -58,9 +58,7 @@ class CalendarWriteServiceTests(unittest.TestCase):
         }
 
         with (
-            patch(
-                "icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")
-            ),
+            patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")),
             patch("icloud_mcp.calendar.write.CalDAVCalendarAdapter", return_value=adapter),
         ):
             first = service.create_event(input_data)
