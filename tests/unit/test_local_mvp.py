@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import patch
 
 from icloud_mcp.calendar.cache import (
     create_calendar_event,
@@ -26,12 +25,10 @@ from icloud_mcp.mcp.server import register_resources_and_prompts
 from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.redaction import redact_text
 from icloud_mcp.platform.util import decode_cursor
-from icloud_mcp.search.embeddings import EmbeddingWorker
 from icloud_mcp.search.maintenance import cleanup_local_index
-from icloud_mcp.search.query_cache import query_cache_get, query_cache_set
 from icloud_mcp.search.query_planner import plan_query
 from icloud_mcp.search.repository import search_documents
-from icloud_mcp.storage.cache_state import ensure_defaults, index_generation, sync_status
+from icloud_mcp.storage.cache_state import ensure_defaults, sync_status
 from icloud_mcp.storage.connection import open_db
 
 
@@ -430,13 +427,6 @@ class LocalMVPTests(unittest.TestCase):
         self.assertEqual(len(result["contacts"]), 1)
         self.assertIsNotNone(result["next_cursor"])
 
-    def test_query_cache_is_bound_to_index_generation(self) -> None:
-        generation = index_generation(self.db)
-        query_cache_set(self.db, "cache-key", {"results": []}, generation)
-
-        self.assertEqual(query_cache_get(self.db, "cache-key", generation), {"results": []})
-        self.assertIsNone(query_cache_get(self.db, "cache-key", generation + 1))
-
     def test_contact_list_without_addressbook_lists_synced_contacts(self) -> None:
         upsert_contact(
             self.db,
@@ -711,13 +701,13 @@ END:VCALENDAR
             redact_text("Email liesa@example.com and use abcd-efgh-ijkl-mnop"), "Email l***@example.com and use ***"
         )
 
-    def test_sqlite_vec_backend_returns_semantic_matches(self) -> None:
+    def test_search_returns_fts_matches(self) -> None:
         upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
         upsert_mail_message(
             self.db,
             account_id=self.settings.default_account_id,
             mailbox_id="mb_inbox",
-            message_id="mail_msg_vector",
+            message_id="mail_msg_fts",
             uid=1,
             subject="Contract timeline",
             from_address={"name": "Liesa", "email": "liesa@example.com"},
@@ -727,62 +717,17 @@ END:VCALENDAR
             body_text="The contract deadline is Friday.",
         )
 
-        worker_result = EmbeddingWorker(self.db).run_once()
-        results = search_documents(self.db, query="due", domains=["mail"], limit=5, offset=0, snippet_chars=300)
-        backend = self.db.query_one("SELECT backend, available FROM vector_backend_state WHERE id = 1")
+        results = search_documents(self.db, query="deadline", domains=["mail"], limit=5, offset=0, snippet_chars=300)
 
-        self.assertEqual(worker_result["vector_backend"], "sqlite-vec")
-        self.assertEqual(backend["backend"], "sqlite-vec")
-        self.assertEqual(backend["available"], 1)
-        self.assertEqual(results[0]["id"], "mail_msg_vector")
-        self.assertEqual(results[0]["why"], ["sqlite_vec_match"])
+        self.assertEqual(results[0]["id"], "mail_msg_fts")
+        self.assertEqual(results[0]["why"], ["lexical_match"])
 
-    def test_sqlite_vec_semantic_gate_suppresses_nonsense_queries(self) -> None:
-        upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
-        upsert_mail_message(
-            self.db,
-            account_id=self.settings.default_account_id,
-            mailbox_id="mb_inbox",
-            message_id="mail_msg_vector_noise",
-            uid=1,
-            subject="Contract timeline",
-            from_address={"name": "Liesa", "email": "liesa@example.com"},
-            to_addresses=[{"name": "Me", "email": "me@example.com"}],
-            date="2026-04-24T09:00:00+02:00",
-            preview="The contract deadline is Friday.",
-            body_text="The contract deadline is Friday.",
-        )
-        EmbeddingWorker(self.db).run_once()
-
+    def test_unknown_lexical_miss_returns_no_results(self) -> None:
         results = search_documents(
             self.db, query="zzqxjv-no-such-token", domains=["mail"], limit=5, offset=0, snippet_chars=300
         )
 
         self.assertEqual(results, [])
-
-    def test_unknown_lexical_miss_skips_semantic_fallback(self) -> None:
-        with patch("icloud_mcp.search.repository.query_similar_chunks", side_effect=AssertionError("semantic called")):
-            results = search_documents(
-                self.db, query="zzqxjv-no-such-token", domains=["mail"], limit=5, offset=0, snippet_chars=300
-            )
-
-        self.assertEqual(results, [])
-
-    def test_embedding_worker_batches_pending_chunks(self) -> None:
-        for index in range(251):
-            self.db.execute(
-                """
-                INSERT INTO search_chunks (id, document_id, chunk_index, text, text_hash, updated_at)
-                VALUES (?, ?, ?, ?, ?, datetime('now'))
-                """,
-                (f"chunk_{index}", f"doc_{index}", 0, f"text {index}", f"hash_{index}"),
-            )
-
-        result = EmbeddingWorker(self.db).run_once()
-        pending = self.db.query_one("SELECT COUNT(*) AS count FROM search_chunks WHERE embedding_status = 'pending'")
-
-        self.assertEqual(result["embedded_chunks"], 250)
-        self.assertEqual(pending["count"], 1)
 
     def test_list_mail_cursor_uses_raw_availability(self) -> None:
         upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
@@ -824,7 +769,6 @@ END:VCALENDAR
                 "calendar_occurrences",
                 "search_documents",
                 "contacts",
-                "query_cache",
             ]
             for row in self.db.query(f"PRAGMA index_list({table})")
         }
@@ -834,7 +778,6 @@ END:VCALENDAR
         self.assertIn("idx_calendar_occurrences_start_end_event", indexes)
         self.assertIn("idx_search_documents_domain_deleted_object", indexes)
         self.assertIn("idx_contacts_addressbook_deleted_display", indexes)
-        self.assertIn("idx_query_cache_expires_generation", indexes)
 
     def test_registered_prompt_marks_retrieved_content_untrusted(self) -> None:
         class FakeMCP:

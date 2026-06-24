@@ -11,7 +11,6 @@ from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.secrets import load_icloud_credentials
 from icloud_mcp.platform.util import utc_now
 from icloud_mcp.storage.connection import Database
-from icloud_mcp.sync.capabilities import ContactsDeltaAdapter, supports_contacts_delta
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
 from icloud_mcp.sync.delta import sync_delta_first
 
@@ -37,17 +36,9 @@ class ContactsSyncWorker:
 
         try:
             adapter = self.adapter or CardDAVContactsAdapter()
-            if supports_contacts_delta(adapter):
-                addressbooks, contacts, full_sync_books, deleted_hrefs = self._sync_with_tokens(
-                    adapter, credentials.apple_id, credentials.app_password
-                )
-            else:
-                addressbooks, contacts = adapter.sync_contacts(
-                    apple_id=credentials.apple_id,
-                    app_password=credentials.app_password,
-                )
-                full_sync_books = {addressbook.id for addressbook in addressbooks}
-                deleted_hrefs = []
+            addressbooks, contacts, full_sync_books, deleted_hrefs = self._sync_with_tokens(
+                adapter, credentials.apple_id, credentials.app_password
+            )
             now = utc_now()
             for addressbook in addressbooks:
                 upsert_addressbook(
@@ -104,7 +95,7 @@ class ContactsSyncWorker:
 
     def _sync_with_tokens(
         self,
-        adapter: ContactsDeltaAdapter,
+        adapter: CardDAVContactsAdapter,
         apple_id: str,
         app_password: str,
     ) -> tuple[list, list, set[str], list[str]]:

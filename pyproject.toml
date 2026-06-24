@@ -11,7 +11,6 @@ requires-python = ">=3.11"
 dependencies = [
   "fastmcp",
   "pydantic",
-  "pydantic-settings",
   "imapclient",
   "caldav",
   "httpx",
@@ -19,13 +18,8 @@ dependencies = [
   "icalendar",
   "python-dateutil",
   "beautifulsoup4",
-  "lxml",
   "defusedxml",
-  "aiosqlite",
   "keyring",
-  "orjson",
-  "tenacity",
-  "sqlite-vec>=0.1.9",
 ]
 
 [project.optional-dependencies]

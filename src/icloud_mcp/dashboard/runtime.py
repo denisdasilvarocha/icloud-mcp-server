@@ -393,7 +393,6 @@ class DashboardSnapshotPresenter:
                 "mail_sync_limit_per_mailbox": self.settings.mail_sync_limit_per_mailbox,
                 "calendar_past_months": self.settings.calendar_past_months,
                 "calendar_future_months": self.settings.calendar_future_months,
-                "query_cache_ttl_seconds": self.settings.query_cache_ttl_seconds,
                 "attachment_text_indexing": self.settings.attachment_text_indexing,
                 "workers": list(workers),
             },
@@ -583,8 +582,6 @@ def _counts(db: Database) -> dict[str, int]:
         "contacts": "SELECT COUNT(*) AS value FROM contacts WHERE deleted_at IS NULL",
         "search_documents": "SELECT COUNT(*) AS value FROM search_documents WHERE deleted_at IS NULL",
         "search_chunks": "SELECT COUNT(*) AS value FROM search_chunks",
-        "pending_embeddings": "SELECT COUNT(*) AS value FROM search_chunks WHERE embedding_status = 'pending'",
-        "query_cache": "SELECT COUNT(*) AS value FROM query_cache",
     }
     counts: dict[str, int] = {}
     for name, sql in queries.items():

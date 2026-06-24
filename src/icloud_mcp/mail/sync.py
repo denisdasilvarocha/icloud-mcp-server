@@ -16,7 +16,6 @@ from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.secrets import load_icloud_credentials
 from icloud_mcp.platform.util import utc_now
 from icloud_mcp.storage.connection import Database
-from icloud_mcp.sync.capabilities import supports_mail_incremental
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
 
 
@@ -41,24 +40,16 @@ class MailSyncWorker:
 
         try:
             adapter = self.adapter or IMAPMailAdapter()
-            if supports_mail_incremental(adapter):
-                delta = adapter.sync_incremental(
-                    apple_id=credentials.apple_id,
-                    app_password=credentials.app_password,
-                    mailbox_states=_mailbox_states(self.db),
-                    days=self.settings.mail_sync_days,
-                    limit_per_mailbox=self.settings.mail_sync_limit_per_mailbox,
-                )
-                mailboxes, messages = delta.mailboxes, delta.messages
-                for deleted in delta.deleted:
-                    tombstone_mail_message_by_uid(self.db, deleted.mailbox_id, deleted.uid)
-            else:
-                mailboxes, messages = adapter.sync_recent(
-                    apple_id=credentials.apple_id,
-                    app_password=credentials.app_password,
-                    days=self.settings.mail_sync_days,
-                    limit_per_mailbox=self.settings.mail_sync_limit_per_mailbox,
-                )
+            delta = adapter.sync_incremental(
+                apple_id=credentials.apple_id,
+                app_password=credentials.app_password,
+                mailbox_states=_mailbox_states(self.db),
+                days=self.settings.mail_sync_days,
+                limit_per_mailbox=self.settings.mail_sync_limit_per_mailbox,
+            )
+            mailboxes, messages = delta.mailboxes, delta.messages
+            for deleted in delta.deleted:
+                tombstone_mail_message_by_uid(self.db, deleted.mailbox_id, deleted.uid)
             now = utc_now()
             for mailbox in mailboxes:
                 backfill_cursor, backfill_status = _recent_sync_backfill_state(

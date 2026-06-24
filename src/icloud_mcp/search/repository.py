@@ -8,17 +8,9 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from icloud_mcp.platform.util import compact_json, normalize_text, parse_json, sha256_text, tokenize, truncate, utc_now
-from icloud_mcp.search.chunker import chunk_text
-from icloud_mcp.search.query_cache import query_cache_get as query_cache_get
-from icloud_mcp.search.query_cache import query_cache_set as query_cache_set
 from icloud_mcp.search.rerank import reciprocal_rank_score
-from icloud_mcp.search.vector import SYNONYMS, VECTOR_MODEL, cosine_score, cosine_score_vectors, embedding_vector
-from icloud_mcp.search.vector_backend import delete_document_vectors, query_similar_chunks
 from icloud_mcp.storage.cache_state import bump_index_generation
 from icloud_mcp.storage.connection import Database
-
-MIN_SEMANTIC_SCORE = 0.2
-MIN_SQLITE_VEC_SCORE = 0.1
 
 
 @dataclass(frozen=True)
@@ -78,14 +70,16 @@ def upsert_search_document(
 
     now = utc_now()
     metadata_json = compact_json(metadata or {})
+    stripped_text = text.strip()
     chunk_rows = (
         chunks
-        or [{"text": part, "type": "body"} for part in chunk_text(text, 4000)]
+        or [
+            {"text": stripped_text[index : index + 4000], "type": "body"}
+            for index in range(0, len(stripped_text), 4000)
+        ]
         or [{"text": text, "type": "body"}]
     )
 
-    if db.query_one("SELECT 1 FROM search_documents WHERE id = ?", (document_id,)):
-        delete_document_vectors(db, document_id)
     with db.transaction():
         db.execute(
             """
@@ -105,10 +99,9 @@ def upsert_search_document(
             (document_id, domain, object_id, occurrence_id, title, text, metadata_json, now),
         )
         db.execute(
-            "DELETE FROM search_embeddings WHERE chunk_id IN (SELECT id FROM search_chunks WHERE document_id = ?)",
+            "DELETE FROM search_chunks WHERE document_id = ?",
             (document_id,),
         )
-        db.execute("DELETE FROM search_chunks WHERE document_id = ?", (document_id,))
         db.execute("DELETE FROM search_fts WHERE document_id = ?", (document_id,))
         for chunk_index, chunk in enumerate(chunk_rows):
             chunk_text_value = str(chunk.get("text") or "")
@@ -143,15 +136,6 @@ def upsert_search_document(
                 """,
                 (document_id, object_id, domain, title, chunk_text_value, sender, participants),
             )
-        db.execute(
-            """
-            INSERT OR REPLACE INTO search_embeddings (chunk_id, embedding_model, vector_json, updated_at)
-            SELECT id, ?, ?, ?
-            FROM search_chunks
-            WHERE document_id = ? AND chunk_index = 0
-            """,
-            (VECTOR_MODEL, compact_json(embedding_vector(text)), now, document_id),
-        )
         bump_index_generation(db)
 
 
@@ -173,8 +157,7 @@ def search_documents(
     query_multiplier = 5 if domains == ["calendar"] else 2
     query_limit = min(max(limit * query_multiplier, limit + 1), query_multiplier * 20)
     if terms:
-        fts_operator = " AND " if len(terms) > 1 else " OR "
-        fts_query = fts_operator.join(f'"{term}"' for term in terms[:8])
+        fts_query = " OR ".join(f'"{term}"' for term in terms[:8])
         placeholders = ",".join("?" for _ in domains)
         lexical_limit = query_limit * 20 if domains == ["calendar"] else query_limit
         rows = db.query(
@@ -231,10 +214,7 @@ def search_documents(
             (*domains, query_limit, offset),
         )
 
-    if rows or _has_semantic_expansion(terms):
-        rows = _rerank_rows(_add_semantic_results(db, query=query, domains=domains, rows=rows, limit=limit))
-    else:
-        rows = _rerank_rows(rows)
+    rows = _rerank_rows(rows)
 
     results = []
     seen_documents: set[str] = set()
@@ -273,68 +253,6 @@ def search_documents(
     return results
 
 
-def _add_semantic_results(
-    db: Database,
-    *,
-    query: str,
-    domains: list[str],
-    rows: list[dict[str, Any]],
-    limit: int,
-) -> list[dict[str, Any]]:
-    if rows:
-        return rows
-    existing = {row["id"] for row in rows}
-    semantic_rows = _sqlite_vec_semantic_results(db, query=query, domains=domains, existing=existing, limit=limit)
-    if semantic_rows is not None:
-        return rows + semantic_rows[: max(0, limit - len(rows))]
-    query_vector = embedding_vector(query)
-    if not query_vector:
-        return rows
-    placeholders = ",".join("?" for _ in domains)
-    token_filter = " OR ".join("e.vector_json LIKE ? ESCAPE '\\'" for _ in query_vector)
-    token_parameters = tuple(f'%"{_escape_like(token)}"%' for token in query_vector)
-    candidates = db.query(
-        f"""
-        SELECT d.id, d.domain, d.object_id, d.occurrence_id, d.title, d.canonical_text, d.metadata_json,
-               e.vector_json
-        FROM search_documents d
-        JOIN search_chunks c ON c.document_id = d.id AND c.chunk_index = 0
-        JOIN search_embeddings e ON e.chunk_id = c.id
-        WHERE d.deleted_at IS NULL AND d.domain IN ({placeholders})
-          AND ({token_filter})
-        """,
-        (*domains, *token_parameters),
-    )
-    semantic_rows = []
-    for candidate in candidates:
-        if candidate["id"] in existing:
-            continue
-        vector = parse_json(candidate.get("vector_json"), None)
-        score = (
-            cosine_score_vectors(query_vector, vector)
-            if isinstance(vector, dict)
-            else cosine_score(query, candidate["canonical_text"])
-        )
-        if score < MIN_SEMANTIC_SCORE:
-            continue
-        candidate["score"] = score
-        candidate["why"] = ["semantic_match"]
-        semantic_rows.append(candidate)
-    semantic_rows.sort(key=lambda row: row["score"], reverse=True)
-    return rows + semantic_rows[: max(0, limit - len(rows))]
-
-
-def _escape_like(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def _has_semantic_expansion(terms: list[str]) -> bool:
-    semantic_terms = set(SYNONYMS)
-    for values in SYNONYMS.values():
-        semantic_terms.update(values)
-    return any(term in semantic_terms for term in terms)
-
-
 def _rerank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not rows:
         return []
@@ -349,8 +267,7 @@ def _rerank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for why in why_values:
             if why not in whys[document_id]:
                 whys[document_id].append(why)
-        weight = 1.2 if {"semantic_match", "sqlite_vec_match"} & set(why_values) else 1.0
-        scores[document_id] = scores.get(document_id, 0.0) + reciprocal_rank_score(rank) * weight
+        scores[document_id] = scores.get(document_id, 0.0) + reciprocal_rank_score(rank)
         if row.get("score") is not None:
             scores[document_id] += max(0.0, float(row["score"])) * 0.2
     max_score = max(scores.values()) or 1.0
@@ -361,47 +278,6 @@ def _rerank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reranked.append(row)
     reranked.sort(key=lambda row: row["score"], reverse=True)
     return reranked
-
-
-def _sqlite_vec_semantic_results(
-    db: Database,
-    *,
-    query: str,
-    domains: list[str],
-    existing: set[str],
-    limit: int,
-) -> list[dict[str, Any]] | None:
-    nearest = query_similar_chunks(db, query, max(limit * 5, 10))
-    if not nearest:
-        return None
-    placeholders = ",".join("?" for _ in nearest)
-    domain_placeholders = ",".join("?" for _ in domains)
-    distances = {row["chunk_id"]: float(row["distance"]) for row in nearest}
-    rows = db.query(
-        f"""
-        SELECT d.id, d.domain, d.object_id, d.occurrence_id, d.title, d.canonical_text, d.metadata_json,
-               c.text AS matched_text, c.id AS chunk_id
-        FROM search_chunks c
-        JOIN search_documents d ON d.id = c.document_id
-        WHERE c.id IN ({placeholders})
-          AND d.deleted_at IS NULL
-          AND d.domain IN ({domain_placeholders})
-        """,
-        (*distances.keys(), *domains),
-    )
-    semantic_rows = []
-    for row in rows:
-        if row["id"] in existing:
-            continue
-        distance = distances.get(row["chunk_id"], 1.0)
-        score = 1.0 - distance if distance <= 1.0 else 1.0 / (1.0 + distance)
-        if score < MIN_SQLITE_VEC_SCORE or cosine_score(query, row.get("matched_text") or row["canonical_text"]) <= 0:
-            continue
-        row["score"] = score
-        row["why"] = ["sqlite_vec_match"]
-        semantic_rows.append(row)
-    semantic_rows.sort(key=lambda row: row["score"], reverse=True)
-    return semantic_rows
 
 
 def person_alias_terms(db: Database, person: str | None) -> list[str]:

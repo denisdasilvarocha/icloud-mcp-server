@@ -236,7 +236,6 @@ Runtime settings are read from environment variables defined in your MCP server 
 | `ICLOUD_MCP_CALENDAR_PAST_MONTHS` | `24` | Calendar past sync window |
 | `ICLOUD_MCP_CALENDAR_FUTURE_MONTHS` | `36` | Calendar future sync window |
 | `ICLOUD_MCP_MAIL_INDEX_BODY_CHARS` | `16000` | Mail body characters indexed for search |
-| `ICLOUD_MCP_QUERY_CACHE_TTL_SECONDS` | `300` | Query cache TTL, clamped up to 1800 |
 | `ICLOUD_MCP_CURSOR_SECRET` | generated | Cursor signing secret |
 | `ICLOUD_MCP_USE_KEYCHAIN` | `true` | Use OS keychain fallback for credentials |
 | `ICLOUD_MCP_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind host |
@@ -284,7 +283,7 @@ src/icloud_mcp/
   mail/         IMAP sync, cache reads, and Mail tools
   calendar/     CalDAV sync, event cache, validation, and write service
   contacts/     CardDAV sync, contact cache, and Contacts tools
-  search/       Query planning, FTS, snippets, embeddings, and ranking
+  search/       Query planning, FTS, snippets, and ranking
   sync/         Scheduler, worker checkpoints, delta helpers, sync tools
   dashboard/    Local HTTP dashboard runtime and lifecycle tools
   storage/      SQLite connection, schema, migrations, cache state

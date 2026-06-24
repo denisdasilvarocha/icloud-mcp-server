@@ -11,8 +11,6 @@ from icloud_mcp.search.policy import _external_domains, _refresh_status, resolve
 from icloud_mcp.search.repository import (
     SearchIndexQuery,
     person_alias_terms,
-    query_cache_get,
-    query_cache_set,
     search_index,
 )
 from icloud_mcp.storage.cache_state import freshness, freshness_status, index_generation
@@ -56,20 +54,6 @@ class SearchService:
         generation = index_generation(self.db)
         freshness_meta = freshness_status(self.db, self.settings.stale_after_seconds)
         refresh_status = _refresh_status(freshness_policy, freshness_meta)
-        if freshness_policy != "refresh_if_stale":
-            cached = query_cache_get(self.db, policy.cache_key, generation)
-            if cached:
-                cached["next_cursor"] = next_cursor(
-                    policy.offset,
-                    len(cached.get("results", [])),
-                    policy.safe_limit,
-                    self.settings.cursor_secret,
-                    {"index_generation": generation},
-                    has_more=bool(cached.get("next_cursor")),
-                )
-                cached["meta"] = {**cached.get("meta", {}), "cache": "hit", "index_generation": generation}
-                return cached
-
         rows = search_documents(
             self.db,
             query=policy.effective_query,
@@ -108,11 +92,8 @@ class SearchService:
                 {"index_generation": generation},
                 has_more=has_more,
             ),
-            "meta": {"cache": "miss", "index_generation": generation, "refresh": refresh_status},
+            "meta": {"cache": "not_used", "index_generation": generation, "refresh": refresh_status},
         }
-        query_cache_set(
-            self.db, policy.cache_key, response, generation, ttl_seconds=self.settings.query_cache_ttl_seconds
-        )
         return response
 
 

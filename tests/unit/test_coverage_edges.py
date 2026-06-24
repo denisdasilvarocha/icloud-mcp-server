@@ -7,7 +7,6 @@ import runpy
 import unittest
 from datetime import UTC, date, datetime
 from email import message_from_bytes
-from threading import RLock
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -28,13 +27,11 @@ from icloud_mcp.calendar.tools import _write_exception_status, register_calendar
 from icloud_mcp.contacts import adapter as carddav
 from icloud_mcp.contacts import cache as contacts_repository
 from icloud_mcp.contacts.cache import upsert_addressbook, upsert_contact
-from icloud_mcp.contacts.schemas import ContactSummary
 from icloud_mcp.contacts.sync import ContactsSyncWorker
 from icloud_mcp.contacts.tools import register_contact_tools
 from icloud_mcp.mail import adapter as imap_mail
 from icloud_mcp.mail import cache as mail_repository
 from icloud_mcp.mail.cache import upsert_mail_message, upsert_mailbox, view_mail
-from icloud_mcp.mail.schemas import MailAddress
 from icloud_mcp.mail.sync import MailBackfillWorker, MailSyncWorker
 from icloud_mcp.mail.tools import register_mail_tools
 from icloud_mcp.mcp.boundary import (
@@ -51,10 +48,8 @@ from icloud_mcp.platform.redaction import redact_secret, redact_text
 from icloud_mcp.platform.secrets import ICloudCredentials, load_icloud_credentials, store_icloud_credentials
 from icloud_mcp.platform.util import cursor_error, decode_cursor, encode_cursor, next_cursor
 from icloud_mcp.search import repository as search_repository
-from icloud_mcp.search.chunker import chunk_text
 from icloud_mcp.search.policy import resolve_search_policy
 from icloud_mcp.search.query_planner import plan_query
-from icloud_mcp.search.schemas import SearchResultRow
 from icloud_mcp.search.service import SearchService, _external_domains, _refresh_status, answer_hints
 from icloud_mcp.search.tools import register_search_tools
 from icloud_mcp.storage import cache_state
@@ -80,10 +75,6 @@ class CoverageEdgesTests(unittest.TestCase):
 
     def test_small_value_modules_and_util_edges(self) -> None:
         importlib.import_module("icloud_mcp.storage.models")
-        self.assertEqual(MailAddress("A", "a@example.com").email, "a@example.com")
-        self.assertEqual(ContactSummary("c", "Name", ["n@example.com"]).display_name, "Name")
-        self.assertEqual(SearchResultRow("id", "mail", "T", "S", 0.5).score, 0.5)
-        self.assertEqual(chunk_text("", 10), [])
         self.assertEqual(decode_cursor(None, "secret"), {"offset": 0})
         cursor = encode_cursor({"offset": 5}, "secret")
         self.assertEqual(decode_cursor(cursor, "secret")["offset"], 5)
@@ -114,7 +105,6 @@ class CoverageEdgesTests(unittest.TestCase):
             "ICLOUD_MCP_DATABASE_PATH": "~/tmp/test.sqlite3",
             "ICLOUD_MCP_CURSOR_SECRET": "env-secret",
             "ICLOUD_APPLE_ID": "person@example.com",
-            "ICLOUD_MCP_QUERY_CACHE_TTL_SECONDS": "10",
             "ICLOUD_MCP_SYNC_ON_START": "false",
             "ICLOUD_MCP_USE_KEYCHAIN": "true",
             "ICLOUD_MCP_ATTACHMENT_TEXT_INDEXING": "true",
@@ -131,7 +121,6 @@ class CoverageEdgesTests(unittest.TestCase):
             settings = Settings.from_env()
             credentials = load_icloud_credentials(settings)
         self.assertEqual(settings.cursor_secret, "env-secret")
-        self.assertEqual(settings.query_cache_ttl_seconds, 300)
         self.assertFalse(settings.sync_on_start)
         self.assertTrue(settings.attachment_text_indexing)
         self.assertEqual(settings.dashboard_host, "0.0.0.0")
@@ -170,7 +159,6 @@ class CoverageEdgesTests(unittest.TestCase):
 
         importlib.import_module("icloud_mcp.platform.logging").configure_logging(logging.DEBUG)
         importlib.import_module("icloud_mcp.platform.dav_xml").parse_xml("<root/>")
-        importlib.import_module("icloud_mcp.search.fts")
         record_metric(self.db, "x", 1.25, {"a": "b"})
         record_metric(self.db, "y", 1.0)
         record_metric(self.db, "y", 1.0)
@@ -413,7 +401,7 @@ class CoverageEdgesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "addressbook home"):
             adapter._addressbook_home_url(_EmptyDAVClient(), "https://example/p/")
         self.assertEqual(adapter._contacts_by_hrefs(_FakeCardDAVClient(), discovered[0], []), [])
-        self.assertIn("&lt;", carddav._sync_collection_body("<token>"))
+        self.assertIn("&lt;", carddav.sync_collection_body("<token>"))
         empty_root = ElementTree.fromstring('<d:multistatus xmlns:d="DAV:"><d:response/></d:multistatus>')
         self.assertEqual(carddav._parse_sync_collection_root(empty_root).changed, [])
 
@@ -771,76 +759,7 @@ class CoverageEdgesTests(unittest.TestCase):
         self.assertEqual(calendar_repository._datetime_value("2026-01-01", "UTC").date(), date(2026, 1, 1))
         self.assertEqual(repo.get_calendar_collection(self.db, "missing"), None)
         self.assertEqual(repo.first_writable_calendar(self.db), None)
-        fake_rows = [
-            {
-                "id": "doc1",
-                "domain": "mail",
-                "object_id": "obj1",
-                "occurrence_id": None,
-                "title": "One",
-                "canonical_text": "text",
-                "metadata_json": "{}",
-            },
-            {
-                "id": "doc1",
-                "domain": "mail",
-                "object_id": "obj1",
-                "occurrence_id": None,
-                "title": "One",
-                "canonical_text": "text",
-                "metadata_json": "{}",
-            },
-        ]
-        with (
-            patch("icloud_mcp.search.repository._add_semantic_results", return_value=fake_rows),
-            patch("icloud_mcp.search.repository._rerank_rows", side_effect=lambda value: value),
-        ):
-            self.assertEqual(
-                repo.search_documents(self.db, query="", domains=["mail"], limit=2, offset=0, snippet_chars=20)[0][
-                    "score"
-                ],
-                1.0,
-            )
-        with (
-            patch("icloud_mcp.search.repository._add_semantic_results", return_value=[fake_rows[0]]),
-            patch("icloud_mcp.search.repository._rerank_rows", side_effect=lambda value: value),
-        ):
-            self.assertEqual(
-                len(repo.search_documents(self.db, query="", domains=["mail"], limit=1, offset=0, snippet_chars=20)), 1
-            )
-        with patch("icloud_mcp.search.repository.query_similar_chunks", return_value=[]):
-            self.assertEqual(
-                repo._add_semantic_results(_SemanticFallbackDb(), query="meeting", domains=["mail"], rows=[], limit=2)[
-                    0
-                ]["why"],
-                ["semantic_match"],
-            )
-        full_rows = [fake_rows[0]]
-        no_query_db = SimpleNamespace(query=lambda *args, **kwargs: self.fail("fallback query should be skipped"))
-        self.assertIs(
-            repo._add_semantic_results(no_query_db, query="meeting", domains=["mail"], rows=full_rows, limit=1),
-            full_rows,
-        )
-        with patch(
-            "icloud_mcp.search.repository.query_similar_chunks",
-            return_value=[{"chunk_id": "chunk", "distance": 0.2}],
-        ):
-            self.assertEqual(
-                repo._sqlite_vec_semantic_results(
-                    _SqliteSemanticDb(), query="sqlite", domains=["mail"], existing={"skip"}, limit=1
-                )[0]["score"],
-                0.8,
-            )
-        with patch(
-            "icloud_mcp.search.repository.query_similar_chunks",
-            return_value=[{"chunk_id": "chunk", "distance": 0.01}],
-        ):
-            self.assertEqual(
-                repo._sqlite_vec_semantic_results(
-                    _SqliteSemanticDb(), query="nonsense", domains=["mail"], existing={"skip"}, limit=1
-                ),
-                [],
-            )
+        self.assertTrue(repo.search_documents(self.db, query="", domains=["mail"], limit=2, offset=0, snippet_chars=20))
         alias_db = SimpleNamespace(query=lambda sql, params=(): [{"alias": "Liesa"}, {"alias": "Liesa S"}])
         self.assertEqual(repo.person_alias_terms(alias_db, "Liesa"), ["Liesa", "Liesa S"])
         self.assertFalse(repo._is_upcoming({"time": {}}))
@@ -1080,8 +999,8 @@ END:VCALENDAR
             freshness_policy="allow_stale",
             cursor_payload={"offset": 0},
         )
-        self.assertEqual(first["meta"]["cache"], "miss")
-        self.assertEqual(second["meta"]["cache"], "hit")
+        self.assertEqual(first["meta"]["cache"], "not_used")
+        self.assertEqual(second["meta"]["cache"], "not_used")
         self.assertEqual(
             service.search(
                 query="Liesa",
@@ -1094,7 +1013,7 @@ END:VCALENDAR
                 freshness_policy="refresh_if_stale",
                 cursor_payload={"offset": 0},
             )["meta"]["cache"],
-            "miss",
+            "not_used",
         )
         self.assertEqual(answer_hints("x", []), [])
         self.assertEqual(
@@ -1195,40 +1114,10 @@ END:VCALENDAR
             cursor_payload={"offset": 0},
         )
 
-        self.assertEqual(second["meta"]["cache"], "hit")
+        self.assertEqual(second["meta"]["cache"], "not_used")
         self.assertEqual(decode_cursor(second["next_cursor"], "new-secret")["offset"], 1)
 
-    def test_vector_backend_edges_and_audit(self) -> None:
-        vector = importlib.import_module("icloud_mcp.search.vector")
-        backend = importlib.import_module("icloud_mcp.search.vector_backend")
-        self.assertEqual(vector.cosine_score("", "doc"), 0.0)
-        self.assertGreater(vector.cosine_score("meeting", "appointment"), 0.0)
-        with patch("icloud_mcp.search.vector.Counter", side_effect=[{"x": 0}, {"x": 1}]):
-            self.assertEqual(vector.cosine_score("query", "document"), 0.0)
-        self.assertEqual(vector.dense_embedding(""), [0.0] * vector.VECTOR_DIMENSIONS)
-        self.assertEqual(vector.cosine_score_vectors({}, {"x": 1}), 0.0)
-        self.assertEqual(vector.cosine_score_vectors({"x": 0}, {"x": 0}), 0.0)
-        self.assertEqual(vector.cosine_score_vectors({"x": 0}, {"x": 1}), 0.0)
-        self.assertEqual(vector.cosine_score_vectors({"x": 1}, {"x": 0}), 0.0)
-        fake = _FakeVectorDb()
-        with patch("icloud_mcp.search.vector_backend.sqlite_vec.load", side_effect=RuntimeError()):
-            self.assertFalse(backend.ensure_vector_backend(fake))
-        cached_fake = _FakeVectorDb()
-        with patch("icloud_mcp.search.vector_backend.sqlite_vec.load") as load:
-            self.assertTrue(backend.ensure_vector_backend(cached_fake))
-            self.assertTrue(backend.ensure_vector_backend(cached_fake))
-            self.assertEqual(load.call_count, 1)
-        with patch("icloud_mcp.search.vector_backend.ensure_vector_backend", return_value=False):
-            self.assertFalse(backend.upsert_chunk_vector(fake, "chunk", "text"))
-            backend.delete_document_vectors(fake, "doc")
-            self.assertEqual(backend.query_similar_chunks(fake, "query", 2), [])
-        with (
-            patch("icloud_mcp.search.vector_backend.ensure_vector_backend", return_value=True),
-            patch("icloud_mcp.search.vector_backend.sqlite_vec.serialize_float32", return_value=b"vec"),
-        ):
-            self.assertTrue(backend.upsert_chunk_vector(fake, "chunk", "text"))
-            backend.delete_document_vectors(fake, "doc")
-            self.assertEqual(backend.query_similar_chunks(fake, "query", 2), [{"chunk_id": "chunk", "distance": 0.1}])
+    def test_audit_edge(self) -> None:
         importlib.import_module("icloud_mcp.platform.audit").audit_calendar_write(self.db, "event", "obj", "ok")
 
     def test_adapter_direct_remaining_edges(self) -> None:
@@ -1431,8 +1320,11 @@ END:VCALENDAR
             recurrence_id=None,
             status=None,
         )
+        full_sync_calendar = caldav.SyncedCalendar(
+            calendar.id, calendar.url, calendar.display_name, None, False, None, "new"
+        )
         CalendarSyncWorker(
-            self.db, settings, adapter=SimpleNamespace(sync_events=lambda **kwargs: ([calendar], [fresh_event]))
+            self.db, settings, adapter=_CalendarWindowAdapter(full_sync_calendar, [fresh_event])
         ).run_once()
         self.assertIsNotNone(
             self.db.query_one("SELECT deleted_at FROM calendar_objects WHERE id = ?", (stale_event.id,))["deleted_at"]
@@ -1492,8 +1384,9 @@ END:VCALENDAR
             organization=None,
             notes=None,
         )
+        full_sync_book = carddav.SyncedAddressBook(book.id, book.url, book.display_name, None, "new")
         ContactsSyncWorker(
-            self.db, settings, adapter=SimpleNamespace(sync_contacts=lambda **kwargs: ([book], [fresh_contact]))
+            self.db, settings, adapter=_ContactsWindowAdapter(full_sync_book, [fresh_contact])
         ).run_once()
         self.assertIsNotNone(
             self.db.query_one("SELECT deleted_at FROM contacts WHERE id = ?", ("stale_contact",))["deleted_at"]
@@ -1748,30 +1641,6 @@ class _EmptyDAVClient:
         return SimpleNamespace(text='<d:multistatus xmlns:d="DAV:"/>', raise_for_status=lambda: None)
 
 
-class _FakeVectorDb:
-    def __init__(self) -> None:
-        self._lock = RLock()
-        self.connection = _FakeVectorConnection()
-
-
-class _FakeVectorConnection:
-    def enable_load_extension(self, enabled: bool) -> None:
-        self.enabled = enabled
-
-    def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> _FakeVectorRows:
-        self.last_sql = sql
-        self.last_parameters = parameters
-        return _FakeVectorRows()
-
-    def commit(self) -> None:
-        return None
-
-
-class _FakeVectorRows:
-    def fetchall(self) -> list[dict[str, object]]:
-        return [{"chunk_id": "chunk", "distance": 0.1}]
-
-
 class _FailingAdapter:
     def __getattr__(self, name: str) -> object:
         def fail(**kwargs: object) -> object:
@@ -1845,8 +1714,9 @@ class _ContactsFallbackAdapter:
 
 
 class _CalendarWindowAdapter:
-    def __init__(self, calendar: caldav.SyncedCalendar) -> None:
+    def __init__(self, calendar: caldav.SyncedCalendar, events: list[caldav.SyncedCalendarEvent] | None = None) -> None:
         self.calendar = calendar
+        self.events = events or []
 
     def discover(self, **kwargs: object) -> list[caldav.SyncedCalendar]:
         return [self.calendar]
@@ -1855,12 +1725,15 @@ class _CalendarWindowAdapter:
         return caldav.WebDAVSyncResult(sync_token="token", changed=[], deleted=[]), []
 
     def sync_events(self, **kwargs: object) -> tuple[list[caldav.SyncedCalendar], list[caldav.SyncedCalendarEvent]]:
-        return [self.calendar], []
+        return [self.calendar], self.events
 
 
 class _ContactsWindowAdapter:
-    def __init__(self, addressbook: carddav.SyncedAddressBook) -> None:
+    def __init__(
+        self, addressbook: carddav.SyncedAddressBook, contacts: list[carddav.SyncedContact] | None = None
+    ) -> None:
         self.addressbook = addressbook
+        self.contacts = contacts or []
 
     def discover_addressbooks(self, **kwargs: object) -> list[carddav.SyncedAddressBook]:
         return [self.addressbook]
@@ -1869,51 +1742,7 @@ class _ContactsWindowAdapter:
         return carddav.WebDAVSyncResult(sync_token="token", changed=[], deleted=[]), []
 
     def sync_contacts(self, **kwargs: object) -> tuple[list[carddav.SyncedAddressBook], list[carddav.SyncedContact]]:
-        return [self.addressbook], []
-
-
-class _SemanticFallbackDb:
-    def query(self, sql: str, parameters: tuple[object, ...] = ()) -> list[dict[str, object]]:
-        return [
-            {
-                "id": "semantic_doc",
-                "domain": "mail",
-                "object_id": "semantic_obj",
-                "occurrence_id": None,
-                "title": "Semantic",
-                "canonical_text": "meeting appointment",
-                "metadata_json": "{}",
-                "vector_json": None,
-            }
-        ]
-
-
-class _SqliteSemanticDb:
-    def query(self, sql: str, parameters: tuple[object, ...] = ()) -> list[dict[str, object]]:
-        return [
-            {
-                "id": "skip",
-                "domain": "mail",
-                "object_id": "skip",
-                "occurrence_id": None,
-                "title": "Skip",
-                "canonical_text": "skip",
-                "metadata_json": "{}",
-                "matched_text": "skip",
-                "chunk_id": "chunk",
-            },
-            {
-                "id": "sqlite_doc",
-                "domain": "mail",
-                "object_id": "sqlite_obj",
-                "occurrence_id": None,
-                "title": "SQLite",
-                "canonical_text": "sqlite",
-                "metadata_json": "{}",
-                "matched_text": "sqlite",
-                "chunk_id": "chunk",
-            },
-        ]
+        return [self.addressbook], self.contacts
 
 
 if __name__ == "__main__":

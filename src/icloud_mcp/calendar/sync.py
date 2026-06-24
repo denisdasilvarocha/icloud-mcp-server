@@ -16,7 +16,6 @@ from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.secrets import load_icloud_credentials
 from icloud_mcp.platform.util import utc_now
 from icloud_mcp.storage.connection import Database
-from icloud_mcp.sync.capabilities import CalendarDeltaAdapter, supports_calendar_delta
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
 from icloud_mcp.sync.delta import sync_delta_first
 
@@ -45,19 +44,9 @@ class CalendarSyncWorker:
             now_dt = datetime.now(tz=UTC)
             start = (now_dt - timedelta(days=31 * self.settings.calendar_past_months)).date()
             end = (now_dt + timedelta(days=31 * self.settings.calendar_future_months)).date()
-            if supports_calendar_delta(adapter):
-                calendars, events, full_sync_calendar_ids, deleted_hrefs = self._sync_with_tokens(
-                    adapter, credentials.apple_id, credentials.app_password, start, end
-                )
-            else:
-                calendars, events = adapter.sync_events(
-                    apple_id=credentials.apple_id,
-                    app_password=credentials.app_password,
-                    start=start,
-                    end=end,
-                )
-                full_sync_calendar_ids = {calendar.id for calendar in calendars}
-                deleted_hrefs = []
+            calendars, events, full_sync_calendar_ids, deleted_hrefs = self._sync_with_tokens(
+                adapter, credentials.apple_id, credentials.app_password, start, end
+            )
             now = utc_now()
             for calendar in calendars:
                 upsert_calendar_collection(
@@ -137,7 +126,7 @@ class CalendarSyncWorker:
 
     def _sync_with_tokens(
         self,
-        adapter: CalendarDeltaAdapter,
+        adapter: CalDAVCalendarAdapter,
         apple_id: str,
         app_password: str,
         start: date,

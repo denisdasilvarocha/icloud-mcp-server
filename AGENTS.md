@@ -10,7 +10,7 @@ iCloud MCP Server - local-first FastMCP server for cached iCloud Mail, Calendar,
 - FastMCP server exposed as `icloud-mcp`
 - SQLite cache at `~/.local/share/icloud-mcp/icloud-mcp.sqlite3` by default
 - iCloud Mail/Calendar/Contacts via IMAP, CalDAV, and CardDAV-related libraries
-- Pydantic, pydantic-settings, aiosqlite, keyring, httpx, orjson, tenacity, sqlite-vec
+- Pydantic, keyring, httpx, Beautiful Soup, defusedxml
 - Ruff for linting/formatting, unittest for tests, coverage with 100% report threshold
 - Build backend: Hatchling
 
@@ -19,7 +19,7 @@ iCloud MCP Server - local-first FastMCP server for cached iCloud Mail, Calendar,
 - `src/icloud_mcp/mail/` - IMAP sync, cache reads, and Mail tools
 - `src/icloud_mcp/calendar/` - CalDAV sync, event cache, validation, and guarded writes
 - `src/icloud_mcp/contacts/` - CardDAV sync, contact cache, and Contacts tools
-- `src/icloud_mcp/search/` - query planning, FTS, snippets, embeddings, and ranking
+- `src/icloud_mcp/search/` - query planning, FTS, snippets, and ranking
 - `src/icloud_mcp/sync/` - scheduler, worker checkpoints, delta helpers, and sync tools
 - `src/icloud_mcp/dashboard/` - local dashboard runtime and lifecycle tools
 - `src/icloud_mcp/storage/` - SQLite connection, schema, migrations, and cache state

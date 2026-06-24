@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from icloud_mcp.platform.util import compact_json, next_cursor, normalize_text, parse_json, sha256_text, utc_now
-from icloud_mcp.search.chunker import chunk_text
 from icloud_mcp.search.repository import upsert_search_document
 from icloud_mcp.storage.cache_state import bump_index_generation
 from icloud_mcp.storage.connection import Database
@@ -396,7 +395,10 @@ def _mail_chunks(
         ]
     )
     chunks = [{"type": "header", "text": header_text}]
-    chunks.extend({"type": "body", "text": chunk} for chunk in chunk_text(body_text, 4000))
+    stripped_body = body_text.strip()
+    chunks.extend(
+        {"type": "body", "text": stripped_body[index : index + 4000]} for index in range(0, len(stripped_body), 4000)
+    )
     return chunks
 
 

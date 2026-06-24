@@ -12,6 +12,8 @@ import httpx
 import vobject
 from defusedxml import ElementTree
 
+from icloud_mcp.platform.dav_xml import parse_sync_collection, sync_collection_body
+
 DAV_NS = "DAV:"
 CARDDAV_NS = "urn:ietf:params:xml:ns:carddav"
 CALSERVER_NS = "http://calendarserver.org/ns/"
@@ -263,40 +265,26 @@ def _report(client: httpx.Client, url: str, depth: int, body: str) -> ElementTre
 
 
 def _sync_collection(client: httpx.Client, url: str, sync_token: str | None) -> WebDAVSyncResult:
-    root = _report(client, url, 1, _sync_collection_body(sync_token))
+    root = _report(client, url, 1, sync_collection_body(sync_token))
     return _parse_sync_collection_root(root)
 
 
-def _sync_collection_body(sync_token: str | None) -> str:
-    token = escape(sync_token or "")
-    return f"""
-    <d:sync-collection xmlns:d="DAV:">
-      <d:sync-token>{token}</d:sync-token>
-      <d:sync-level>1</d:sync-level>
-      <d:prop>
-        <d:getetag/>
-      </d:prop>
-    </d:sync-collection>
-    """.strip()
-
-
 def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
-    return _parse_sync_collection_root(ElementTree.fromstring(xml_text))
+    sync_token, changed, deleted = parse_sync_collection(xml_text)
+    return WebDAVSyncResult(
+        sync_token=sync_token,
+        changed=[WebDAVSyncChange(href=href, etag=etag) for href, etag in changed],
+        deleted=deleted,
+    )
 
 
 def _parse_sync_collection_root(root: ElementTree.Element) -> WebDAVSyncResult:
-    changed: list[WebDAVSyncChange] = []
-    deleted: list[str] = []
-    for response in root.findall("d:response", NS):
-        href = _text(response, "d:href")
-        if not href:
-            continue
-        status = _text(response, "d:status")
-        if status and " 404 " in f" {status} ":
-            deleted.append(href)
-            continue
-        changed.append(WebDAVSyncChange(href=href, etag=_text(response, ".//d:getetag")))
-    return WebDAVSyncResult(sync_token=_text(root, "d:sync-token"), changed=changed, deleted=deleted)
+    sync_token, changed, deleted = parse_sync_collection(ElementTree.tostring(root, encoding="unicode"))
+    return WebDAVSyncResult(
+        sync_token=sync_token,
+        changed=[WebDAVSyncChange(href=href, etag=etag) for href, etag in changed],
+        deleted=deleted,
+    )
 
 
 def _dav_request(client: httpx.Client, method: str, url: str, depth: int, body: str) -> ElementTree.Element:

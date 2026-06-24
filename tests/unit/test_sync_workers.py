@@ -27,15 +27,14 @@ from icloud_mcp.platform.config import Settings
 from icloud_mcp.search.repository import search_documents
 from icloud_mcp.storage.cache_state import ensure_defaults, sync_status
 from icloud_mcp.storage.connection import open_db
-from icloud_mcp.sync.capabilities import (
-    supports_calendar_delta,
-    supports_contacts_delta,
-    supports_mail_incremental,
-)
 from icloud_mcp.sync.scheduler import SyncScheduler
 
 
 class FakeMailAdapter:
+    def sync_incremental(self, **kwargs):
+        mailboxes, messages = self.sync_recent(**kwargs)
+        return IMAPSyncDelta(mailboxes=mailboxes, messages=messages, deleted=[])
+
     def sync_recent(self, **kwargs):
         return (
             [SyncedMailbox(id="mb_inbox", name="INBOX", uid_validity="1", uid_next=2, highest_modseq=None)],
@@ -61,6 +60,9 @@ class FakeMailAdapter:
 
 
 class FailingMailAdapter:
+    def sync_incremental(self, **kwargs):
+        raise RuntimeError("app password expired for user@example.com")
+
     def sync_recent(self, **kwargs):
         raise RuntimeError("app password expired for user@example.com")
 
@@ -138,6 +140,13 @@ class FakeMailIncrementalAdapter:
 
 
 class FakeCalendarAdapter:
+    def discover(self, **kwargs):
+        calendars, _events = self.sync_events(start=date.today(), end=date.today())
+        return calendars
+
+    def sync_event_changes(self, **kwargs):
+        return CalendarSyncResult(sync_token="token", changed=[], deleted=[]), []
+
     def sync_events(self, **kwargs):
         self.start = kwargs["start"]
         self.end = kwargs["end"]
@@ -181,6 +190,13 @@ class FakeCalendarAdapter:
 
 
 class FakeContactsAdapter:
+    def discover_addressbooks(self, **kwargs):
+        addressbooks, _contacts = self.sync_contacts(**kwargs)
+        return addressbooks
+
+    def sync_contact_changes(self, **kwargs):
+        return ContactSyncResult(sync_token="token", changed=[], deleted=[]), []
+
     def sync_contacts(self, **kwargs):
         return (
             [
@@ -393,14 +409,6 @@ class SyncWorkerTests(unittest.TestCase):
         self.assertIn("cal_evt_1", ids)
         self.assertIn("mail_msg_1", ids)
 
-    def test_sync_adapter_capability_seams_are_explicit(self) -> None:
-        self.assertFalse(supports_mail_incremental(FakeMailAdapter()))
-        self.assertTrue(supports_mail_incremental(FakeMailIncrementalAdapter()))
-        self.assertFalse(supports_calendar_delta(FakeCalendarAdapter()))
-        self.assertTrue(supports_calendar_delta(FakeCalendarDeltaAdapter()))
-        self.assertFalse(supports_contacts_delta(FakeContactsAdapter()))
-        self.assertTrue(supports_contacts_delta(FakeContactsDeltaAdapter()))
-
     def test_mail_backfill_syncs_older_mail_batch(self) -> None:
         MailSyncWorker(self.db, self.settings, FakeMailAdapter()).run_once()
 
@@ -550,15 +558,13 @@ class SyncWorkerTests(unittest.TestCase):
         self.assertTrue(adapter.full_sync_called)
         self.assertEqual(contact["display_name"], "Full Sync Contact")
 
-    def test_scheduler_marks_embeddings_ready(self) -> None:
+    def test_scheduler_runs_maintenance_without_embedding_worker(self) -> None:
         MailSyncWorker(self.db, self.settings, FakeMailAdapter()).run_once()
         scheduler = SyncScheduler(self.db, Settings(database_path=":memory:"))
         result = scheduler.sync_now()
-        chunk = self.db.query_one("SELECT embedding_status, embedding_model FROM search_chunks LIMIT 1")
 
-        self.assertIn("embedding_worker", result)
-        self.assertEqual(chunk["embedding_status"], "ready")
-        self.assertEqual(sync_status(self.db)["workers"]["embedding_worker"]["status"], "ok")
+        self.assertNotIn("embedding_worker", result)
+        self.assertEqual(sync_status(self.db)["workers"]["maintenance_worker"]["status"], "ok")
 
 
 if __name__ == "__main__":

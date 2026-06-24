@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import urldefrag, urljoin
-from xml.sax.saxutils import escape
 
 from defusedxml import ElementTree
 from icalendar import Calendar
 
 from icloud_mcp.calendar.cache import build_ics
+from icloud_mcp.platform.dav_xml import parse_sync_collection, sync_collection_body
 
 DAV_NS = "DAV:"
 NS = {"d": DAV_NS}
@@ -235,37 +235,17 @@ def _calendar_from_object(calendar: Any) -> SyncedCalendar:
 
 
 def _sync_collection(client: Any, url: str, sync_token: str | None) -> WebDAVSyncResult:
-    response = client.report(url, _sync_collection_body(sync_token), depth=1)
+    response = client.report(url, sync_collection_body(sync_token), depth=1)
     return _parse_sync_collection_response(_response_text(response))
 
 
-def _sync_collection_body(sync_token: str | None) -> str:
-    token = escape(sync_token or "")
-    return f"""
-    <d:sync-collection xmlns:d="DAV:">
-      <d:sync-token>{token}</d:sync-token>
-      <d:sync-level>1</d:sync-level>
-      <d:prop>
-        <d:getetag/>
-      </d:prop>
-    </d:sync-collection>
-    """.strip()
-
-
 def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
-    root = ElementTree.fromstring(xml_text)
-    changed: list[WebDAVSyncChange] = []
-    deleted: list[str] = []
-    for response in root.findall("d:response", NS):
-        href = _text(response, "d:href")
-        if not href:
-            continue
-        status = _text(response, "d:status")
-        if status and " 404 " in f" {status} ":
-            deleted.append(href)
-            continue
-        changed.append(WebDAVSyncChange(href=href, etag=_text(response, ".//d:getetag")))
-    return WebDAVSyncResult(sync_token=_text(root, "d:sync-token"), changed=changed, deleted=deleted)
+    sync_token, changed, deleted = parse_sync_collection(xml_text)
+    return WebDAVSyncResult(
+        sync_token=sync_token,
+        changed=[WebDAVSyncChange(href=href, etag=etag) for href, etag in changed],
+        deleted=deleted,
+    )
 
 
 def _response_text(response: Any) -> str:
