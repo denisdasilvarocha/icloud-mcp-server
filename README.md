@@ -4,16 +4,11 @@
 
 **Local-first MCP access to iCloud Mail, Calendar, and Contacts.**
 
-[![CI/CD](https://img.shields.io/github/actions/workflow/status/denisdasilvarocha/icloud-mcp-server/ci-cd.yml?branch=main&style=flat-square&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/denisdasilvarocha/icloud-mcp-server/actions/workflows/ci-cd.yml)
-[![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![FastMCP](https://img.shields.io/badge/FastMCP-server-111827?style=flat-square)](https://github.com/jlowin/fastmcp)
-[![uv](https://img.shields.io/badge/uv-managed-654FF0?style=flat-square)](https://docs.astral.sh/uv/)
-[![Ruff](https://img.shields.io/badge/code_style-ruff-46A5E5?style=flat-square)](https://docs.astral.sh/ruff/)
-[![Version](https://img.shields.io/badge/version-0.1.0-31c48d?style=flat-square)](pyproject.toml)
+[![CI/CD](https://img.shields.io/github/actions/workflow/status/denisdasilvarocha/icloud-mcp-server/ci-cd.yml?branch=main&style=flat-square&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/denisdasilvarocha/icloud-mcp-server/actions/workflows/ci-cd.yml) [![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/) [![FastMCP](https://img.shields.io/badge/FastMCP-server-111827?style=flat-square)](https://github.com/jlowin/fastmcp) [![uv](https://img.shields.io/badge/uv-managed-654FF0?style=flat-square)](https://docs.astral.sh/uv/) [![Ruff](https://img.shields.io/badge/code_style-ruff-46A5E5?style=flat-square)](https://docs.astral.sh/ruff/) [![Version](https://img.shields.io/badge/version-0.1.0-31c48d?style=flat-square)](pyproject.toml)
 
 [Features](#features) · [Setup](#setup) · [MCP Tools](#mcp-tools) · [Configuration](#configuration) · [Development](#development)
 
-<img src=".github/assets/dashboard.png" alt="iCloud MCP Server dashboard" width="860">
+<img src=".github/assets/dashboard.png" alt="iCloud MCP Server dashboard" width="1440">
 
 </div>
 
