@@ -8,6 +8,8 @@
 
 [Features](#features) | [Setup](#setup) | [Tools](#mcp-tools) | [Configuration](#configuration) | [Development](#development)
 
+<img src=".github/assets/dashboard.png">
+
 </div>
 
 `icloud-mcp-server` runs a local [FastMCP](https://github.com/jlowin/fastmcp) server that syncs iCloud Mail, Calendar, and Contacts into a SQLite cache, then exposes search, list, view, sync, dashboard, and guarded calendar-write tools to MCP clients.
@@ -15,7 +17,7 @@
 Most tools are read-only and operate from the local cache. Calendar create/update tools are the only tools that write back to iCloud.
 
 > [!IMPORTANT]
-> Use an Apple app-specific password. Do not use your Apple ID account password.
+> Use an Apple app-specific password. Do not use your Apple ID account password. See https://account.apple.com/
 
 ## Features
 
@@ -127,6 +129,9 @@ If keychain lookup is disabled or unavailable, also provide `ICLOUD_APP_PASSWORD
 | `icloud.dashboard.status` | Return dashboard runtime status |
 | `icloud.dashboard.stop` | Stop the local dashboard |
 
+> [!NOTE]
+> To start the Dashboard, ask your MCP agent: `Start the iCloud MCP server dashboard`. It will return a local dashboard link with an access token.
+
 ## Resources and Prompt
 
 The server also exposes direct MCP resources:
@@ -181,14 +186,6 @@ Run unit tests:
 
 ```bash
 uv run python -m unittest discover -s tests/unit
-```
-
-Run live iCloud smoke tests:
-
-```bash
-export ICLOUD_APPLE_ID="you@example.com"
-export ICLOUD_APP_PASSWORD="app-specific-password"
-./scripts/run-live-sync-smoke.sh
 ```
 
 Lint and format:
