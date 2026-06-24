@@ -33,8 +33,6 @@ Most tools are read-only and operate from the local cache. The only tools that w
 >
 > Create one at https://account.apple.com/.
 
----
-
 ## Features
 
 - **Local-first access** to iCloud Mail, Calendar, and Contacts through a SQLite cache.
@@ -47,8 +45,6 @@ Most tools are read-only and operate from the local cache. The only tools that w
 - **Local dashboard** for sync health, worker state, cache counts, metrics, and runtime configuration.
 - **One-script MCP client setup** for Codex, Claude Code, Hermes Agent, and Docker Compose.
 - **Local safety defaults** including app-specific password support, OS keychain fallback, redacted errors, and loopback-only dashboard binding.
-
----
 
 ## MCP Tools
 
@@ -105,8 +101,6 @@ Most tools are read-only and operate from the local cache. The only tools that w
 >
 > The tool returns a local dashboard URL with an access token.
 
----
-
 ## Setup
 
 ### Prerequisites
@@ -156,8 +150,6 @@ It then writes the MCP client configuration for the selected agent.
 > [!NOTE]
 > When keychain storage is enabled, setup stores only `ICLOUD_APPLE_ID` in the MCP client config. The app-specific password is read from the OS keychain.
 
----
-
 ## Docker Compose
 
 Docker Compose is the recommended option when you want an isolated, always-on local server.
@@ -199,8 +191,6 @@ The dashboard is published on host loopback ports `8765-8814`, so dashboard link
 }
 ```
 
----
-
 ## Manual Run
 
 The package exposes one stdio MCP entrypoint:
@@ -228,8 +218,6 @@ When keychain storage is disabled or unavailable, also provide:
 ```json
 "ICLOUD_APP_PASSWORD": "aaaa-bbbb-cccc-dddd"
 ```
-
----
 
 ## Configuration
 
@@ -261,8 +249,6 @@ Runtime settings are read from environment variables defined in your MCP server 
 > [!WARNING]
 > `ICLOUD_MCP_ALLOW_UNREDACTED_DEBUG=true` may expose sensitive account details or iCloud response data in errors. Keep it disabled outside local debugging.
 
----
-
 ## Development
 
 Install dependencies:
@@ -289,8 +275,6 @@ Lint and format:
 uv run ruff check .
 uv run ruff format .
 ```
-
----
 
 ## Project Structure
 
