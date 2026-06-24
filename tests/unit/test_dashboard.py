@@ -138,6 +138,26 @@ class DashboardTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "loopback-only"):
             dashboard.start()
 
+    def test_dashboard_can_publish_docker_loopback_url(self) -> None:
+        fake_server = _FakeHTTPServer(("0.0.0.0", 8765), object)
+        dashboard = DashboardRuntime(
+            self.db,
+            self.settings,
+            self.scheduler,
+            host="0.0.0.0",
+            public_host="127.0.0.1",
+            allow_external_bind=True,
+        )
+
+        try:
+            with patch("icloud_mcp.dashboard.runtime.ThreadingHTTPServer", return_value=fake_server):
+                started = dashboard.start()
+            self.assertIn("http://127.0.0.1:8765/?token=", started["url"])
+            self.assertEqual(started["host"], "0.0.0.0")
+            self.assertEqual(started["public_host"], "127.0.0.1")
+        finally:
+            dashboard.stop()
+
     def test_handler_routes_and_response_writers(self) -> None:
         handler_type = _make_handler(self.dashboard)
         calls = []

@@ -1,0 +1,24 @@
+services:
+  icloud-mcp:
+    build: .
+    image: icloud-mcp-server:local
+    container_name: icloud-mcp-server
+    command: ["sleep", "infinity"]
+    stdin_open: true
+    tty: false
+    environment:
+      ICLOUD_APPLE_ID: ${ICLOUD_APPLE_ID:-}
+      ICLOUD_APP_PASSWORD: ${ICLOUD_APP_PASSWORD:-}
+      ICLOUD_MCP_DATABASE_PATH: /data/icloud-mcp.sqlite3
+      ICLOUD_MCP_USE_KEYCHAIN: "false"
+      ICLOUD_MCP_SYNC_ON_START: ${ICLOUD_MCP_SYNC_ON_START:-true}
+      ICLOUD_MCP_DASHBOARD_HOST: 0.0.0.0
+      ICLOUD_MCP_DASHBOARD_PUBLIC_HOST: 127.0.0.1
+      ICLOUD_MCP_DASHBOARD_ALLOW_EXTERNAL_BIND: "true"
+    ports:
+      - "127.0.0.1:8765-8814:8765-8814"
+    volumes:
+      - icloud-mcp-data:/data
+
+volumes:
+  icloud-mcp-data:

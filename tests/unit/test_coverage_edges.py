@@ -119,6 +119,10 @@ class CoverageEdgesTests(unittest.TestCase):
             "ICLOUD_MCP_USE_KEYCHAIN": "true",
             "ICLOUD_MCP_ATTACHMENT_TEXT_INDEXING": "true",
             "ICLOUD_MCP_ALLOW_UNREDACTED_DEBUG": "true",
+            "ICLOUD_MCP_DASHBOARD_HOST": "0.0.0.0",
+            "ICLOUD_MCP_DASHBOARD_PUBLIC_HOST": "127.0.0.1",
+            "ICLOUD_MCP_DASHBOARD_PORT": "8766",
+            "ICLOUD_MCP_DASHBOARD_ALLOW_EXTERNAL_BIND": "true",
         }
         with (
             patch.dict("os.environ", env, clear=True),
@@ -130,6 +134,10 @@ class CoverageEdgesTests(unittest.TestCase):
         self.assertEqual(settings.query_cache_ttl_seconds, 300)
         self.assertFalse(settings.sync_on_start)
         self.assertTrue(settings.attachment_text_indexing)
+        self.assertEqual(settings.dashboard_host, "0.0.0.0")
+        self.assertEqual(settings.dashboard_public_host, "127.0.0.1")
+        self.assertEqual(settings.dashboard_port, 8766)
+        self.assertTrue(settings.dashboard_allow_external_bind)
         self.assertEqual(credentials, ICloudCredentials("person@example.com", "app-pass"))
         read.assert_called()
         with (

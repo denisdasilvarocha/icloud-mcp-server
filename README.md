@@ -6,13 +6,14 @@
 
 [![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/) [![FastMCP](https://img.shields.io/badge/FastMCP-server-111827?style=flat-square)](https://github.com/jlowin/fastmcp) [![uv](https://img.shields.io/badge/uv-managed-654FF0?style=flat-square)](https://docs.astral.sh/uv/) [![Ruff](https://img.shields.io/badge/code_style-ruff-46A5E5?style=flat-square)](https://docs.astral.sh/ruff/) [![Version](https://img.shields.io/badge/version-0.1.0-31c48d?style=flat-square)](pyproject.toml)
 
-[Features](#features) | [Setup](#setup) | [Tools](#mcp-tools) | [Configuration](#configuration) | [Development](#development)
+[Features](#features) | [Setup](#setup) | [Tools](#mcp-tools) | [Configuration](#configuration)
 
 <img src=".github/assets/dashboard.png">
-
 </div>
 
-`icloud-mcp-server` runs a local [FastMCP](https://github.com/jlowin/fastmcp) server that syncs iCloud Mail, Calendar, and Contacts into a SQLite cache, then exposes search, list, view, sync, dashboard, and guarded calendar-write tools to MCP clients.
+`icloud-mcp-server` runs a local [FastMCP](https://github.com/jlowin/fastmcp) server for iCloud Mail, Calendar, and Contacts. It syncs data into SQLite, then exposes MCP tools for search, list/view, sync, dashboard, and calendar create/update.
+
+Mail uses IMAP. Calendar uses CalDAV. Contacts use CardDAV.
 
 Most tools are read-only and operate from the local cache. Calendar create/update tools are the only tools that write back to iCloud.
 
@@ -21,67 +22,13 @@ Most tools are read-only and operate from the local cache. Calendar create/updat
 
 ## Features
 
-- **Unified local search** across Mail, Calendar, and Contacts with pagination and date/person filters
-- **Compact list/view tools** for cached mail messages, calendar events, calendars, and contacts
-- **Background sync** with checkpoints, retry/backoff state, freshness reporting, and manual sync
-- **Calendar writes** with validation, idempotency, audit events, and remote CalDAV persistence
-- **Local dashboard** for sync health, worker state, cache counts, and metrics
-- **MCP resources** for direct `mail://`, `calendar://`, and `contact://` lookups
-- **Local-first storage** using SQLite at `~/.local/share/icloud-mcp/icloud-mcp.sqlite3` by default
-
-## Setup
-
-Install prerequisites:
-
-- Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/)
-- An iCloud Apple ID
-- An Apple app-specific password
-
-Clone the repository, then run one of the setup helpers:
-
-```bash
-git clone https://github.com/denisdasilvarocha/icloud-mcp-server.git
-cd icloud-mcp-server
-
-./scripts/setup-all-mcp.sh
-```
-
-Setup helpers prompt for credentials, config scope, and sync-on-start behavior. They also verify the server imports and write MCP client configuration for the selected client.
-
-| Script | Target |
-| --- | --- |
-| `./scripts/setup-all-mcp.sh` | Codex, Claude Code, and Hermes Agent |
-| `./scripts/setup-codex-mcp.sh` | Codex `.codex/config.toml` |
-| `./scripts/setup-claude-code-mcp.sh` | Claude Code `.claude.json` or project `.mcp.json` |
-| `./scripts/setup-hermes-agent-mcp.sh` | Hermes `.hermes/config.yaml` and `.hermes/.env` |
-
-> [!NOTE]
-> By default, setup stores the app-specific password in the OS keychain and keeps only `ICLOUD_APPLE_ID` in MCP config. Set `ICLOUD_SETUP_PERSIST_APP_PASSWORD=true` only if you explicitly want the password written to an environment file/config payload.
-
-## Manual Run
-
-The package exposes one stdio MCP entrypoint:
-
-```bash
-uv run icloud-mcp
-```
-
-Equivalent MCP client command payload:
-
-```json
-{
-  "command": "uv",
-  "args": ["run", "--project", "/path/to/icloud-mcp-server", "icloud-mcp"],
-  "cwd": "/path/to/icloud-mcp-server",
-  "env": {
-    "ICLOUD_APPLE_ID": "you@example.com",
-    "ICLOUD_MCP_SYNC_ON_START": "true"
-  }
-}
-```
-
-If keychain lookup is disabled or unavailable, also provide `ICLOUD_APP_PASSWORD`.
+- Search Mail, Calendar, and Contacts with pagination and date/person filters
+- List and view cached mail messages, calendar events, calendars, and contacts
+- Sync in the background with checkpoints, retry state, freshness reports, and manual sync
+- Create and update calendar events with validation, audit events, and CalDAV persistence
+- Open a local dashboard for sync health, worker state, cache counts, and metrics
+- Store the local cache in SQLite at `~/.local/share/icloud-mcp/icloud-mcp.sqlite3` by default
+- Store the Apple app-specific password in the OS keychain instead of MCP config
 
 ## MCP Tools
 
@@ -97,14 +44,14 @@ If keychain lookup is disabled or unavailable, also provide `ICLOUD_APP_PASSWORD
 
 | Tool | Purpose |
 | --- | --- |
-| `icloud.mail.list` | List compact mail rows from the local cache |
+| `icloud.mail.list` | List mail rows from the local cache |
 | `icloud.mail.view` | View one cached mail message |
 
 ### Contacts
 
 | Tool | Purpose |
 | --- | --- |
-| `icloud.contacts.list` | List compact contact rows |
+| `icloud.contacts.list` | List contact rows |
 | `icloud.contacts.search` | Search contacts by local aliases/indexes |
 | `icloud.contacts.view` | View one cached contact |
 
@@ -124,27 +71,96 @@ If keychain lookup is disabled or unavailable, also provide `ICLOUD_APP_PASSWORD
 | --- | --- |
 | `icloud.sync.status` | Report cache freshness and worker checkpoints |
 | `icloud.sync.now` | Run one iCloud sync cycle |
-| `icloud.metrics.snapshot` | Return compact local metrics |
+| `icloud.metrics.snapshot` | Return local metrics |
 | `icloud.dashboard.start` | Start the local dashboard |
 | `icloud.dashboard.status` | Return dashboard runtime status |
 | `icloud.dashboard.stop` | Stop the local dashboard |
 
 > [!NOTE]
-> To start the Dashboard, ask your MCP agent: `Start the iCloud MCP server dashboard`. It will return a local dashboard link with an access token.
+> To start the Dashboard, ask your Agent: `Start the iCloud MCP server dashboard`. It will return a local dashboard link with an access token you can visit.
 
-## Resources and Prompt
+## Setup
 
-The server also exposes direct MCP resources:
+Install prerequisites:
 
-- `mail://{message_id}`
-- `calendar://{event_id}`
-- `contact://{contact_id}`
+- Python 3.11+
+- [`uv`](https://docs.astral.sh/uv/) or [`docker`](https://www.docker.com/)
+- iCloud Apple ID (e.g. email@icloud.com)
+- Apple app-specific password. Create one at https://account.apple.com/
 
-It registers `icloud_search_prompt(question)` for evidence-grounded answers from local iCloud search results.
+Clone the repository, then run setup:
+
+```bash
+git clone https://github.com/denisdasilvarocha/icloud-mcp-server.git
+cd icloud-mcp-server
+
+./scripts/setup.sh
+```
+
+`scripts/setup.sh` prompts for the MCP client, credentials, config scope, credential storage, and sync-on-start behavior. It writes MCP client configuration for the selected target.
+
+| Target | Command |
+| --- | --- |
+| Interactive (Recommended) | `./scripts/setup.sh` |
+| Codex | `./scripts/setup.sh codex` |
+| Claude Code | `./scripts/setup.sh claude-code` |
+| Hermes Agent | `./scripts/setup.sh hermes-agent` |
+| Docker Compose | `./scripts/setup.sh docker` |
+
+> [!NOTE]
+> If you choose keychain storage, setup keeps only `ICLOUD_APPLE_ID` in MCP config.
+
+## Docker Compose (Recommended)
+
+Build and start the Docker container:
+
+```bash
+./scripts/setup.sh docker
+```
+
+Compose stores the SQLite cache in the `icloud-mcp-data` volume at `/data/icloud-mcp.sqlite3`. The container is named `icloud-mcp-server` and stays running in the background. MCP clients connect with `docker exec -i icloud-mcp-server icloud-mcp`.
+
+Docker cannot read the host keychain. Provide `ICLOUD_APP_PASSWORD` through setup (`scripts/setup.sh`) or pass an equivalent secret through your own Compose override.
+
+The dashboard is published on host loopback ports `8765-8814`, so dashboard links returned by the MCP tool open from the host browser.
+
+MCP client command payload for Docker:
+
+```json
+{
+
+  "command": "docker",
+  "args": ["exec", "-i", "icloud-mcp-server", "icloud-mcp"]
+}
+```
+
+## Manual Run
+
+The package exposes one stdio MCP entrypoint:
+
+```bash
+uv run icloud-mcp
+```
+
+MCP client command payload:
+
+```json
+{
+  "command": "uv",
+  "args": ["run", "--project", "/path/to/icloud-mcp-server", "icloud-mcp"],
+  "cwd": "/path/to/icloud-mcp-server",
+  "env": {
+    "ICLOUD_APPLE_ID": "you@example.com",
+    "ICLOUD_MCP_SYNC_ON_START": "true"
+  }
+}
+```
+
+If keychain is disabled or unavailable, also provide `ICLOUD_APP_PASSWORD`.
 
 ## Configuration
 
-Runtime settings are read from environment variables:
+Runtime settings are read from environment variables where you define the MCP Server:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -162,6 +178,10 @@ Runtime settings are read from environment variables:
 | `ICLOUD_MCP_QUERY_CACHE_TTL_SECONDS` | `300` | Query cache TTL, clamped up to 1800 |
 | `ICLOUD_MCP_CURSOR_SECRET` | generated | Cursor signing secret |
 | `ICLOUD_MCP_USE_KEYCHAIN` | `true` | Use OS keychain fallback for credentials |
+| `ICLOUD_MCP_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind host |
+| `ICLOUD_MCP_DASHBOARD_PUBLIC_HOST` | `127.0.0.1` | Hostname shown in dashboard URLs |
+| `ICLOUD_MCP_DASHBOARD_PORT` | `8765` | First dashboard port to try |
+| `ICLOUD_MCP_DASHBOARD_ALLOW_EXTERNAL_BIND` | `false` | Allow non-loopback dashboard bind host; keep public host loopback |
 | `ICLOUD_MCP_ATTACHMENT_TEXT_INDEXING` | `false` | Include attachment text in indexing |
 | `ICLOUD_MCP_ALLOW_UNREDACTED_DEBUG` | `false` | Allow unredacted debug errors |
 
@@ -211,5 +231,5 @@ src/icloud_mcp/
 tests/
   unit/         Fast local contract and behavior tests
   integration/  Opt-in live iCloud smoke test
-scripts/        MCP client setup and live smoke helpers
+scripts/        Single MCP client setup script
 ```

@@ -35,6 +35,10 @@ class Settings:
     calendar_future_months: int = 36
     use_keychain: bool = True
     allow_unredacted_debug: bool = False
+    dashboard_host: str = "127.0.0.1"
+    dashboard_public_host: str = "127.0.0.1"
+    dashboard_port: int = 8765
+    dashboard_allow_external_bind: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -60,6 +64,10 @@ class Settings:
             use_keychain=_env_bool("ICLOUD_MCP_USE_KEYCHAIN", True),
             attachment_text_indexing=_env_bool("ICLOUD_MCP_ATTACHMENT_TEXT_INDEXING", False),
             allow_unredacted_debug=_env_bool("ICLOUD_MCP_ALLOW_UNREDACTED_DEBUG", False),
+            dashboard_host=os.getenv("ICLOUD_MCP_DASHBOARD_HOST", "127.0.0.1"),
+            dashboard_public_host=os.getenv("ICLOUD_MCP_DASHBOARD_PUBLIC_HOST", "127.0.0.1"),
+            dashboard_port=_env_int("ICLOUD_MCP_DASHBOARD_PORT", 8765, minimum=1, maximum=65535),
+            dashboard_allow_external_bind=_env_bool("ICLOUD_MCP_DASHBOARD_ALLOW_EXTERNAL_BIND", False),
         )
 
 

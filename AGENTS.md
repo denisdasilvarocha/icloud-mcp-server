@@ -31,6 +31,7 @@ iCloud MCP Server - local-first FastMCP server for cached iCloud Mail, Calendar,
 ## Commands
 - Setup: `uv sync --extra dev`
 - Dev: `uv run icloud-mcp`
+- Docker: `docker compose up -d`
 - Test: `uv run python -m unittest discover -s tests/unit`
 - Lint: `uv run ruff check .`
 - Format: `uv run ruff format .`
@@ -54,3 +55,4 @@ Run `./scripts/run-live-sync-smoke.sh` only for changes that need real iCloud ve
 - Keep most tools local-cache read-only. Calendar create/update are the write paths.
 - Prefer small `unittest.TestCase` tests with deterministic fakes over live services.
 - For runtime settings, update `src/icloud_mcp/platform/config.py` and README together.
+- Docker runs stdio by default, persists cache in the `icloud-mcp-data` volume, and disables OS keychain lookup unless explicitly overridden.

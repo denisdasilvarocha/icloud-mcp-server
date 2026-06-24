@@ -447,7 +447,9 @@ class DashboardRuntime:
     settings: Settings
     scheduler: SyncScheduler
     host: str = "127.0.0.1"
+    public_host: str = "127.0.0.1"
     default_port: int = 8765
+    allow_external_bind: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _server: ThreadingHTTPServer | None = None
     _thread: threading.Thread | None = None
@@ -541,7 +543,7 @@ class DashboardRuntime:
             initializer()
 
     def _bind_server(self) -> ThreadingHTTPServer:
-        _ensure_loopback_dashboard_host(self.host)
+        _ensure_dashboard_hosts(self.host, self.public_host, self.allow_external_bind)
         handler = _make_handler(self)
         port = self.default_port
         for candidate in range(port, port + 50):
@@ -554,8 +556,8 @@ class DashboardRuntime:
     def _status_unlocked(self) -> dict[str, Any]:
         running = self._server is not None
         port = self._server.server_address[1] if self._server else None
-        url = f"http://{self.host}:{port}/?token={self._dashboard_token}" if port else None
-        return {"running": running, "host": self.host, "port": port, "url": url}
+        url = f"http://{self.public_host}:{port}/?token={self._dashboard_token}" if port else None
+        return {"running": running, "host": self.host, "public_host": self.public_host, "port": port, "url": url}
 
     def _manual_sync_snapshot(self) -> dict[str, Any]:
         with self._manual_state_lock:
@@ -653,6 +655,14 @@ def _make_handler(runtime: DashboardRuntime) -> type[BaseHTTPRequestHandler]:
 
 def _ensure_loopback_dashboard_host(host: str) -> None:
     if host.strip().casefold() not in LOOPBACK_DASHBOARD_HOSTS:
+        raise RuntimeError("dashboard host must be loopback-only")
+
+
+def _ensure_dashboard_hosts(host: str, public_host: str, allow_external_bind: bool) -> None:
+    _ensure_loopback_dashboard_host(public_host)
+    if host.strip().casefold() in LOOPBACK_DASHBOARD_HOSTS:
+        return
+    if not allow_external_bind:
         raise RuntimeError("dashboard host must be loopback-only")
 
 

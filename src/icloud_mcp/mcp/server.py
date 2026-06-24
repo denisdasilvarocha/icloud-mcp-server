@@ -32,7 +32,15 @@ def create_server(
     active_settings = settings or Settings.from_env()
     active_db = db or open_db(active_settings.database_path)
     active_scheduler = scheduler or SyncScheduler(db=active_db, settings=active_settings)
-    active_dashboard = dashboard or DashboardRuntime(db=active_db, settings=active_settings, scheduler=active_scheduler)
+    active_dashboard = dashboard or DashboardRuntime(
+        db=active_db,
+        settings=active_settings,
+        scheduler=active_scheduler,
+        host=active_settings.dashboard_host,
+        public_host=active_settings.dashboard_public_host,
+        default_port=active_settings.dashboard_port,
+        allow_external_bind=active_settings.dashboard_allow_external_bind,
+    )
     ensure_defaults(active_db, active_settings)
 
     mcp = FastMCP(
@@ -63,7 +71,15 @@ def main() -> None:
     ensure_defaults(db, settings)
     scheduler = SyncScheduler(db=db, settings=settings)
     scheduler.start_background()
-    dashboard = DashboardRuntime(db=db, settings=settings, scheduler=scheduler)
+    dashboard = DashboardRuntime(
+        db=db,
+        settings=settings,
+        scheduler=scheduler,
+        host=settings.dashboard_host,
+        public_host=settings.dashboard_public_host,
+        default_port=settings.dashboard_port,
+        allow_external_bind=settings.dashboard_allow_external_bind,
+    )
     mcp = create_server(settings=settings, db=db, scheduler=scheduler, dashboard=dashboard)
     mcp.run(transport="stdio")
 
