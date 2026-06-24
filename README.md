@@ -2,18 +2,22 @@
 
 # iCloud MCP Server
 
-*Local-first MCP access to iCloud Mail, Calendar, and Contacts.*
+Local-first MCP access to iCloud Mail, Calendar, and Contacts.
 
-[![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/) [![FastMCP](https://img.shields.io/badge/FastMCP-server-111827?style=flat-square)](https://github.com/jlowin/fastmcp) [![uv](https://img.shields.io/badge/uv-managed-654FF0?style=flat-square)](https://docs.astral.sh/uv/) [![Ruff](https://img.shields.io/badge/code_style-ruff-46A5E5?style=flat-square)](https://docs.astral.sh/ruff/) [![Version](https://img.shields.io/badge/version-0.1.0-31c48d?style=flat-square)](pyproject.toml)
+[![CI/CD](https://img.shields.io/github/actions/workflow/status/denisdasilvarocha/icloud-mcp-server/ci-cd.yml?branch=main&style=flat-square&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/denisdasilvarocha/icloud-mcp-server/actions/workflows/ci-cd.yml) [![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/) [![FastMCP](https://img.shields.io/badge/FastMCP-server-111827?style=flat-square)](https://github.com/jlowin/fastmcp) [![uv](https://img.shields.io/badge/uv-managed-654FF0?style=flat-square)](https://docs.astral.sh/uv/) [![Ruff](https://img.shields.io/badge/code_style-ruff-46A5E5?style=flat-square)](https://docs.astral.sh/ruff/) [![Version](https://img.shields.io/badge/version-0.1.0-31c48d?style=flat-square)](pyproject.toml)
 
 [Features](#features) | [Setup](#setup) | [Tools](#mcp-tools) | [Configuration](#configuration)
 
 <img src=".github/assets/dashboard.png">
 </div>
 
-`icloud-mcp-server` runs a local [FastMCP](https://github.com/jlowin/fastmcp) server for iCloud Mail, Calendar, and Contacts. It syncs data into SQLite, then exposes MCP tools for search, list/view, sync, dashboard, and calendar create/update.
+<br />
+`icloud-mcp-server` runs a local [FastMCP](https://github.com/jlowin/fastmcp) server for iCloud Mail, Calendar, and Contacts. It syncs data into SQLite, then exposes MCP tools for search, list/view, sync, dashboard, and calendar create/update.<br><br>
 
-Mail uses IMAP. Calendar uses CalDAV. Contacts use CardDAV.
+**Official Protocols**:
+- IMAP for Mail
+- CalDAV for Calendar
+- CardDAV for Contacts
 
 Most tools are read-only and operate from the local cache. Calendar create/update tools are the only tools that write back to iCloud.
 
@@ -22,13 +26,14 @@ Most tools are read-only and operate from the local cache. Calendar create/updat
 
 ## Features
 
-- Search Mail, Calendar, and Contacts with pagination and date/person filters
-- List and view cached mail messages, calendar events, calendars, and contacts
-- Sync in the background with checkpoints, retry state, freshness reports, and manual sync
-- Create and update calendar events with validation, audit events, and CalDAV persistence
-- Open a local dashboard for sync health, worker state, cache counts, and metrics
-- Store the local cache in SQLite at `~/.local/share/icloud-mcp/icloud-mcp.sqlite3` by default
-- Store the Apple app-specific password in the OS keychain instead of MCP config
+- Local-first MCP access to iCloud Mail, Calendar, and Contacts through a SQLite cache
+- Unified and domain-specific search with FTS, semantic fallback, snippets, answer hints, signed cursors, and date/person/domain filters
+- Mail, Calendar, and Contacts list/view tools and an `icloud_search_prompt`
+- Background and manual sync over IMAP, CalDAV, and CardDAV with checkpoints, retry/backoff state, freshness reports, and cleanup
+- Guarded Calendar create/update with validation, idempotent create requests, ETag conflict checks, audit events, and CalDAV persistence
+- Local dashboard for sync health, worker state, cache counts, metrics, and runtime configuration
+- One-script MCP client setup and Docker Compose support with persisted SQLite storage (Codex, Claude, Hermes)
+- Local safety defaults: app-specific password support, OS keychain fallback, redacted errors, and loopback dashboard binding
 
 ## MCP Tools
 
@@ -77,7 +82,7 @@ Most tools are read-only and operate from the local cache. Calendar create/updat
 | `icloud.dashboard.stop` | Stop the local dashboard |
 
 > [!NOTE]
-> To start the Dashboard, ask your Agent: `Start the iCloud MCP server dashboard`. It will return a local dashboard link with an access token you can visit.
+> To start the Dashboard, ask your Agent: `Start the iCloud MCP server dashboard`. It will return a local link with an access token you can visit.
 
 ## Setup
 
@@ -215,7 +220,7 @@ uv run ruff check .
 uv run ruff format .
 ```
 
-## Project Layout
+## Project
 
 ```text
 src/icloud_mcp/
