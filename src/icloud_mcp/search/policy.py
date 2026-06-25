@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -70,16 +70,14 @@ def resolve_search_policy(
         snippet_chars=snippet_chars if include_body_snippets else 160,
         cache_key="",
     )
-    return SearchPolicy(
-        **{
-            **policy.__dict__,
-            "cache_key": _cache_key(
-                policy,
-                person=person,
-                include_body_snippets=include_body_snippets,
-                cursor_payload=cursor_payload,
-            ),
-        }
+    return replace(
+        policy,
+        cache_key=_cache_key(
+            policy,
+            person=person,
+            include_body_snippets=include_body_snippets,
+            cursor_payload=cursor_payload,
+        ),
     )
 
 

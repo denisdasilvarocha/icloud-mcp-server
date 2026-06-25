@@ -16,7 +16,6 @@ from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.secrets import load_icloud_credentials
 from icloud_mcp.platform.util import utc_now
 from icloud_mcp.storage.connection import Database
-from icloud_mcp.sync.capabilities import supports_mail_incremental
 from icloud_mcp.sync.checkpoints import update_checkpoint, update_failure_checkpoint
 
 
@@ -41,49 +40,29 @@ class MailSyncWorker:
 
         try:
             adapter = self.adapter or IMAPMailAdapter()
-            if supports_mail_incremental(adapter):
-                delta = adapter.sync_incremental(
-                    apple_id=credentials.apple_id,
-                    app_password=credentials.app_password,
-                    mailbox_states=_mailbox_states(self.db),
-                    days=self.settings.mail_sync_days,
-                    limit_per_mailbox=self.settings.mail_sync_limit_per_mailbox,
-                )
-                mailboxes, messages = delta.mailboxes, delta.messages
-                for deleted in delta.deleted:
-                    tombstone_mail_message_by_uid(self.db, deleted.mailbox_id, deleted.uid)
-            else:
-                mailboxes, messages = adapter.sync_recent(
-                    apple_id=credentials.apple_id,
-                    app_password=credentials.app_password,
-                    days=self.settings.mail_sync_days,
-                    limit_per_mailbox=self.settings.mail_sync_limit_per_mailbox,
-                )
+            delta = adapter.sync_incremental(
+                apple_id=credentials.apple_id,
+                app_password=credentials.app_password,
+                mailbox_states=_mailbox_states(self.db),
+                days=self.settings.mail_sync_days,
+                limit_per_mailbox=self.settings.mail_sync_limit_per_mailbox,
+            )
+            mailboxes, messages = delta.mailboxes, delta.messages
+            for deleted in delta.deleted:
+                tombstone_mail_message_by_uid(self.db, deleted.mailbox_id, deleted.uid)
             now = utc_now()
             for mailbox in mailboxes:
-                backfill_cursor, backfill_status = _recent_sync_backfill_state(
+                _upsert_mailbox_state(
                     self.db,
-                    mailbox_id=mailbox.id,
-                    cursor=mailbox.backfill_cursor,
-                    status=mailbox.backfill_status,
-                )
-                upsert_mailbox(
-                    self.db,
-                    account_id=self.settings.default_account_id,
-                    mailbox_id=mailbox.id,
-                    name=mailbox.name,
-                    last_sync_at=now,
-                )
-                update_mailbox_state(
-                    self.db,
-                    mailbox_id=mailbox.id,
-                    uid_validity=mailbox.uid_validity,
-                    uid_next=mailbox.uid_next,
-                    highest_modseq=mailbox.highest_modseq,
-                    last_synced_uid=mailbox.last_synced_uid,
-                    backfill_cursor=backfill_cursor,
-                    backfill_status=backfill_status,
-                    last_sync_at=now,
+                    self.settings,
+                    mailbox,
+                    now,
+                    backfill_state=_recent_sync_backfill_state(
+                        self.db,
+                        mailbox_id=mailbox.id,
+                        cursor=mailbox.backfill_cursor,
+                        status=mailbox.backfill_status,
+                    ),
                 )
             _upsert_messages(self.db, self.settings, messages)
             result = {
@@ -145,24 +124,7 @@ class MailBackfillWorker:
                 limit=self.settings.mail_sync_limit_per_mailbox,
             )
             now = utc_now()
-            upsert_mailbox(
-                self.db,
-                account_id=self.settings.default_account_id,
-                mailbox_id=mailbox.id,
-                name=mailbox.name,
-                last_sync_at=now,
-            )
-            update_mailbox_state(
-                self.db,
-                mailbox_id=mailbox.id,
-                uid_validity=mailbox.uid_validity,
-                uid_next=mailbox.uid_next,
-                highest_modseq=mailbox.highest_modseq,
-                last_synced_uid=mailbox.last_synced_uid,
-                backfill_cursor=mailbox.backfill_cursor,
-                backfill_status=mailbox.backfill_status,
-                last_sync_at=now,
-            )
+            _upsert_mailbox_state(self.db, self.settings, mailbox, now)
             _upsert_messages(self.db, self.settings, messages)
             result = {
                 "status": "ok",
@@ -181,6 +143,34 @@ class MailBackfillWorker:
                 exc,
                 allow_unredacted=self.settings.allow_unredacted_debug,
             )
+
+
+def _upsert_mailbox_state(
+    db: Database,
+    settings: Settings,
+    mailbox,
+    now: str,
+    backfill_state: tuple[str | None, str | None] | None = None,
+) -> None:
+    backfill_cursor, backfill_status = backfill_state or (mailbox.backfill_cursor, mailbox.backfill_status)
+    upsert_mailbox(
+        db,
+        account_id=settings.default_account_id,
+        mailbox_id=mailbox.id,
+        name=mailbox.name,
+        last_sync_at=now,
+    )
+    update_mailbox_state(
+        db,
+        mailbox_id=mailbox.id,
+        uid_validity=mailbox.uid_validity,
+        uid_next=mailbox.uid_next,
+        highest_modseq=mailbox.highest_modseq,
+        last_synced_uid=mailbox.last_synced_uid,
+        backfill_cursor=backfill_cursor,
+        backfill_status=backfill_status,
+        last_sync_at=now,
+    )
 
 
 def _upsert_messages(db: Database, settings: Settings, messages: list) -> None:

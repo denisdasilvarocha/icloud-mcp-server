@@ -24,8 +24,6 @@ class Settings:
     mail_body_view_chars: int = 8000
     mail_index_body_chars: int = 16000
     snippet_chars: int = 360
-    query_cache_ttl_seconds: int = 300
-    attachment_text_indexing: bool = False
     sync_on_start: bool = True
     sync_interval_seconds: int = 900
     stale_after_seconds: int = 86400
@@ -51,7 +49,6 @@ class Settings:
             apple_id=os.getenv("ICLOUD_APPLE_ID"),
             app_password=os.getenv("ICLOUD_APP_PASSWORD"),
             mail_index_body_chars=_env_int("ICLOUD_MCP_MAIL_INDEX_BODY_CHARS", 16000, minimum=0, maximum=250000),
-            query_cache_ttl_seconds=min(1800, max(300, _env_int("ICLOUD_MCP_QUERY_CACHE_TTL_SECONDS", 300, minimum=1))),
             sync_on_start=_env_bool("ICLOUD_MCP_SYNC_ON_START", True),
             sync_interval_seconds=_env_int("ICLOUD_MCP_SYNC_INTERVAL_SECONDS", 900, minimum=60),
             stale_after_seconds=_env_int("ICLOUD_MCP_STALE_AFTER_SECONDS", 86400, minimum=0),
@@ -62,7 +59,6 @@ class Settings:
             calendar_past_months=_env_int("ICLOUD_MCP_CALENDAR_PAST_MONTHS", 24, minimum=0, maximum=240),
             calendar_future_months=_env_int("ICLOUD_MCP_CALENDAR_FUTURE_MONTHS", 36, minimum=0, maximum=240),
             use_keychain=_env_bool("ICLOUD_MCP_USE_KEYCHAIN", True),
-            attachment_text_indexing=_env_bool("ICLOUD_MCP_ATTACHMENT_TEXT_INDEXING", False),
             allow_unredacted_debug=_env_bool("ICLOUD_MCP_ALLOW_UNREDACTED_DEBUG", False),
             dashboard_host=os.getenv("ICLOUD_MCP_DASHBOARD_HOST", "127.0.0.1"),
             dashboard_public_host=os.getenv("ICLOUD_MCP_DASHBOARD_PUBLIC_HOST", "127.0.0.1"),

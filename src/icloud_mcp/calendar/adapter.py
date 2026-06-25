@@ -7,15 +7,17 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 from urllib.parse import urldefrag, urljoin
-from xml.sax.saxutils import escape
 
 from defusedxml import ElementTree
 from icalendar import Calendar
 
 from icloud_mcp.calendar.cache import build_ics
+from icloud_mcp.platform import dav_xml
 
 DAV_NS = "DAV:"
 NS = {"d": DAV_NS}
+WebDAVSyncResult = dav_xml.WebDAVSyncResult
+sync_collection_body = dav_xml.sync_collection_body
 
 
 @dataclass(frozen=True)
@@ -71,33 +73,11 @@ class CalendarWrite:
     uid: str
 
 
-@dataclass(frozen=True)
-class WebDAVSyncChange:
-    """Changed WebDAV member returned by sync-collection."""
-
-    href: str
-    etag: str | None
-
-
-@dataclass(frozen=True)
-class WebDAVSyncResult:
-    """Parsed WebDAV sync-collection result."""
-
-    sync_token: str | None
-    changed: list[WebDAVSyncChange]
-    deleted: list[str]
-
-
 class CalDAVCalendarAdapter:
     """Calendar read/write adapter using python-caldav."""
 
     def __init__(self, config: CalDAVConfig | None = None) -> None:
         self.config = config or CalDAVConfig()
-
-    def configured(self, apple_id: str | None, app_password: str | None) -> bool:
-        """Return whether credentials are available out-of-band."""
-
-        return bool(apple_id and app_password)
 
     def discover(self, *, apple_id: str, app_password: str) -> list[SyncedCalendar]:
         """Discover iCloud calendars through CalDAV principal."""
@@ -235,37 +215,8 @@ def _calendar_from_object(calendar: Any) -> SyncedCalendar:
 
 
 def _sync_collection(client: Any, url: str, sync_token: str | None) -> WebDAVSyncResult:
-    response = client.report(url, _sync_collection_body(sync_token), depth=1)
-    return _parse_sync_collection_response(_response_text(response))
-
-
-def _sync_collection_body(sync_token: str | None) -> str:
-    token = escape(sync_token or "")
-    return f"""
-    <d:sync-collection xmlns:d="DAV:">
-      <d:sync-token>{token}</d:sync-token>
-      <d:sync-level>1</d:sync-level>
-      <d:prop>
-        <d:getetag/>
-      </d:prop>
-    </d:sync-collection>
-    """.strip()
-
-
-def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
-    root = ElementTree.fromstring(xml_text)
-    changed: list[WebDAVSyncChange] = []
-    deleted: list[str] = []
-    for response in root.findall("d:response", NS):
-        href = _text(response, "d:href")
-        if not href:
-            continue
-        status = _text(response, "d:status")
-        if status and " 404 " in f" {status} ":
-            deleted.append(href)
-            continue
-        changed.append(WebDAVSyncChange(href=href, etag=_text(response, ".//d:getetag")))
-    return WebDAVSyncResult(sync_token=_text(root, "d:sync-token"), changed=changed, deleted=deleted)
+    response = client.report(url, sync_collection_body(sync_token), depth=1)
+    return dav_xml.parse_sync_collection_result(_response_text(response))
 
 
 def _response_text(response: Any) -> str:

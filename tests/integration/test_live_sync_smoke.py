@@ -19,7 +19,6 @@ EXPECTED_RESULT_WORKERS = {
     "calendar_sync_worker",
     "mail_sync_worker",
     "mail_backfill_worker",
-    "embedding_worker",
 }
 EXPECTED_CHECKPOINTS = EXPECTED_RESULT_WORKERS | {"indexer_worker"}
 BAD_STATUSES = {"error", "dead_letter", "backoff"}
@@ -49,7 +48,6 @@ class LiveSyncSmokeTests(unittest.TestCase):
         self._assert_sync_result_healthy(first_result)
         self._assert_sync_result_healthy(second_result)
         self._assert_cache_tables_consistent(second_result)
-        self._assert_vector_index_complete(second_result)
 
         status = sync_status(self.db, self.settings.stale_after_seconds)
         self._assert_status_healthy(status)
@@ -116,29 +114,12 @@ class LiveSyncSmokeTests(unittest.TestCase):
             if secret:
                 self.assertNotIn(secret, serialized)
 
-    def _assert_vector_index_complete(self, result: dict[str, dict[str, Any]]) -> None:
-        backend = self.db.query_one("SELECT backend, dimensions, available FROM vector_backend_state WHERE id = 1")
-        self.assertIsNotNone(backend)
-        self.assertEqual(backend["backend"], "sqlite-vec")
-        self.assertGreater(int(backend["dimensions"]), 0)
-        self.assertIn(int(backend["available"]), {0, 1})
-
-        chunks = self._count("search_chunks")
-        ready_chunks = self._count("search_chunks", "embedding_status = 'ready'")
-        embeddings = self._count("search_embeddings")
-        self.assertEqual(ready_chunks, chunks)
-        self.assertEqual(embeddings, chunks)
-        self.assertIn("embedded_chunks", result["embedding_worker"])
-
     async def _assert_mcp_tools(self, server: object) -> None:
         status = await self._call_tool(server, "icloud.sync.status", {})
         metrics = await self._call_tool(server, "icloud.metrics.snapshot", {"limit": 50})
         search_query = self._first_search_query()
         search = await self._call_tool(server, "icloud.search", {"query": search_query, "limit": 5})
-        cache_rows_before_search = self._count("query_cache")
-        cache_query = f"live-smoke-query-cache-{os.getpid()}"
-        uncached_search = await self._call_tool(server, "icloud.search", {"query": cache_query, "limit": 5})
-        cached_search = await self._call_tool(server, "icloud.search", {"query": cache_query, "limit": 5})
+        repeat_search = await self._call_tool(server, "icloud.search", {"query": search_query, "limit": 5})
 
         self._assert_status_healthy(status)
         self._assert_no_credentials_leaked(status)
@@ -148,10 +129,9 @@ class LiveSyncSmokeTests(unittest.TestCase):
         self.assertIn("results", search)
         if self._count("search_documents", "deleted_at IS NULL") > 0:
             self.assertGreater(len(search["results"]), 0)
-        self.assertEqual(uncached_search.get("meta", {}).get("cache"), "miss")
-        self.assertIn("results", cached_search)
-        self.assertEqual(cached_search.get("meta", {}).get("cache"), "hit")
-        self.assertGreaterEqual(self._count("query_cache"), cache_rows_before_search + 1)
+        self.assertEqual(search.get("meta", {}).get("cache"), "not_used")
+        self.assertIn("results", repeat_search)
+        self.assertEqual(repeat_search.get("meta", {}).get("cache"), "not_used")
 
         await self._assert_mail_tools_when_cached(server)
         await self._assert_contact_tools_when_cached(server)

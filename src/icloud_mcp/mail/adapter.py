@@ -90,52 +90,6 @@ class IMAPMailAdapter:
     def __init__(self, config: IMAPMailConfig | None = None) -> None:
         self.config = config or IMAPMailConfig()
 
-    def configured(self, apple_id: str | None, app_password: str | None) -> bool:
-        """Return whether credentials are available out-of-band."""
-
-        return bool(apple_id and app_password)
-
-    def sync_recent(
-        self,
-        *,
-        apple_id: str,
-        app_password: str,
-        days: int,
-        limit_per_mailbox: int,
-        mailboxes: list[str] | None = None,
-    ) -> tuple[list[SyncedMailbox], list[SyncedMailMessage]]:
-        """Fetch recent messages from iCloud IMAP without mutating server state."""
-
-        from imapclient import IMAPClient
-
-        synced_mailboxes: list[SyncedMailbox] = []
-        synced_messages: list[SyncedMailMessage] = []
-        since = (datetime.now(tz=UTC) - timedelta(days=days)).date()
-
-        with IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True) as client:
-            client.login(apple_id, app_password)
-            folder_names = mailboxes or self._folder_names(client.list_folders())
-            for folder in folder_names:
-                select_info = client.select_folder(folder, readonly=True)
-                mailbox_id = _mailbox_id(folder)
-                uids = client.search(["SINCE", since])
-                synced_mailboxes.append(
-                    SyncedMailbox(
-                        id=mailbox_id,
-                        name=folder,
-                        uid_validity=_string_value(select_info.get(b"UIDVALIDITY")),
-                        uid_next=_int_value(select_info.get(b"UIDNEXT")),
-                        highest_modseq=_string_value(select_info.get(b"HIGHESTMODSEQ")),
-                        last_synced_uid=max((int(uid) for uid in uids), default=None),
-                        backfill_cursor=f"{since.isoformat()}:{folder}",
-                        backfill_status="partial",
-                    )
-                )
-                if limit_per_mailbox > 0:
-                    uids = sorted(uids)[-limit_per_mailbox:]
-                synced_messages.extend(_fetch_messages(client, mailbox_id, [int(uid) for uid in uids]))
-        return synced_mailboxes, synced_messages
-
     def sync_incremental(
         self,
         *,
@@ -147,14 +101,12 @@ class IMAPMailAdapter:
     ) -> IMAPSyncDelta:
         """Fetch new/changed messages and detect missing known UIDs."""
 
-        from imapclient import IMAPClient
-
         synced_mailboxes: list[SyncedMailbox] = []
         synced_messages: list[SyncedMailMessage] = []
         deleted: list[DeletedMailMessage] = []
         since = (datetime.now(tz=UTC) - timedelta(days=days)).date()
 
-        with IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True) as client:
+        with self._client() as client:
             client.login(apple_id, app_password)
             folder_names = self._folder_names(client.list_folders())
             for folder in folder_names:
@@ -205,9 +157,7 @@ class IMAPMailAdapter:
     ) -> tuple[SyncedMailbox, list[SyncedMailMessage]]:
         """Fetch one bounded batch of older messages for a mailbox."""
 
-        from imapclient import IMAPClient
-
-        with IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True) as client:
+        with self._client() as client:
             client.login(apple_id, app_password)
             select_info = client.select_folder(mailbox, readonly=True)
             mailbox_id = _mailbox_id(mailbox)
@@ -229,6 +179,11 @@ class IMAPMailAdapter:
                 ),
                 messages,
             )
+
+    def _client(self) -> Any:
+        from imapclient import IMAPClient
+
+        return IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True)
 
     def _folder_names(self, folders: list[tuple[Any, Any, str]]) -> list[str]:
         """Return folders worth syncing, with noisy folders delayed by ranking."""
@@ -480,12 +435,6 @@ def _message_date(message: Message, internal_date: Any) -> str:
     if isinstance(internal_date, datetime):
         return internal_date.isoformat()
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
-
-
-def _has_attachments(message: Message) -> bool:
-    return any(
-        _header_text(part.get("Content-Disposition")).lower().startswith("attachment") for part in message.walk()
-    )
 
 
 def _references(value: str) -> list[str]:

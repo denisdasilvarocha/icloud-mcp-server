@@ -166,26 +166,9 @@ CREATE TABLE IF NOT EXISTS search_chunks (
   text TEXT NOT NULL,
   token_count INTEGER,
   text_hash TEXT NOT NULL,
-  embedding_model TEXT,
-  embedding_status TEXT NOT NULL DEFAULT 'pending',
   metadata_json TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE(document_id, chunk_index)
-);
-
-CREATE TABLE IF NOT EXISTS search_embeddings (
-  chunk_id TEXT PRIMARY KEY,
-  embedding_model TEXT NOT NULL,
-  vector_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS vector_backend_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  backend TEXT NOT NULL,
-  dimensions INTEGER NOT NULL,
-  available INTEGER NOT NULL,
-  updated_at TEXT NOT NULL
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
@@ -228,13 +211,6 @@ CREATE TABLE IF NOT EXISTS metrics (
   value REAL NOT NULL,
   tags_json TEXT,
   created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS query_cache (
-  key TEXT PRIMARY KEY,
-  value_json TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  index_generation INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS index_state (
@@ -411,12 +387,6 @@ def _ensure_indexes(db: Database) -> None:
             {"contact_id", "confidence"},
             "CREATE INDEX IF NOT EXISTS idx_person_aliases_contact_confidence "
             "ON person_aliases(contact_id, confidence DESC)",
-        ),
-        (
-            "query_cache",
-            {"expires_at", "index_generation"},
-            "CREATE INDEX IF NOT EXISTS idx_query_cache_expires_generation "
-            "ON query_cache(expires_at, index_generation)",
         ),
     ]
     for table, required_columns, sql in indexes:

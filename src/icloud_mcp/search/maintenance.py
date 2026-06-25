@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from icloud_mcp.platform.util import utc_now
-from icloud_mcp.search.vector_backend import delete_document_vectors
 from icloud_mcp.storage.cache_state import bump_index_generation
 from icloud_mcp.storage.connection import Database
 
@@ -59,9 +58,6 @@ def cleanup_local_index(db: Database) -> dict[str, int]:
         """
     )
     document_ids = [row["id"] for row in stale_documents]
-    for document_id in document_ids:
-        delete_document_vectors(db, document_id)
-
     removed_chunks = 0
     removed_fts = 0
     removed_documents = 0
@@ -92,12 +88,6 @@ def cleanup_local_index(db: Database) -> dict[str, int]:
         WHERE document_id NOT IN (SELECT id FROM search_documents)
         """
     ).rowcount
-    removed_embeddings = db.execute(
-        """
-        DELETE FROM search_embeddings
-        WHERE chunk_id NOT IN (SELECT id FROM search_chunks)
-        """
-    ).rowcount
     removed_aliases = db.execute(
         """
         DELETE FROM person_aliases
@@ -123,7 +113,6 @@ def cleanup_local_index(db: Database) -> dict[str, int]:
             removed_documents,
             removed_chunks,
             removed_fts,
-            removed_embeddings,
             removed_aliases,
             removed_contact_fts,
             removed_occurrences,
@@ -141,12 +130,7 @@ def cleanup_local_index(db: Database) -> dict[str, int]:
         "removed_documents": max(0, removed_documents),
         "removed_chunks": max(0, removed_chunks),
         "removed_fts": max(0, removed_fts),
-        "removed_embeddings": max(0, removed_embeddings),
         "removed_aliases": max(0, removed_aliases),
         "removed_contact_fts": max(0, removed_contact_fts),
         "removed_occurrences": max(0, removed_occurrences),
     }
-
-
-MIN_SEMANTIC_SCORE = 0.2
-MIN_SQLITE_VEC_SCORE = 0.1

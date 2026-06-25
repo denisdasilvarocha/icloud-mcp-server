@@ -7,18 +7,10 @@ from typing import Any
 
 from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.util import next_cursor, tokenize
-from icloud_mcp.search.policy import _external_domains, _refresh_status, resolve_search_policy
-from icloud_mcp.search.repository import (
-    SearchIndexQuery,
-    person_alias_terms,
-    query_cache_get,
-    query_cache_set,
-    search_index,
-)
+from icloud_mcp.search.policy import _refresh_status, resolve_search_policy
+from icloud_mcp.search.repository import person_alias_terms, search_documents
 from icloud_mcp.storage.cache_state import freshness, freshness_status, index_generation
 from icloud_mcp.storage.connection import Database
-
-__all__ = ["SearchService", "answer_hints", "_external_domains", "_refresh_status"]
 
 
 class SearchService:
@@ -56,20 +48,6 @@ class SearchService:
         generation = index_generation(self.db)
         freshness_meta = freshness_status(self.db, self.settings.stale_after_seconds)
         refresh_status = _refresh_status(freshness_policy, freshness_meta)
-        if freshness_policy != "refresh_if_stale":
-            cached = query_cache_get(self.db, policy.cache_key, generation)
-            if cached:
-                cached["next_cursor"] = next_cursor(
-                    policy.offset,
-                    len(cached.get("results", [])),
-                    policy.safe_limit,
-                    self.settings.cursor_secret,
-                    {"index_generation": generation},
-                    has_more=bool(cached.get("next_cursor")),
-                )
-                cached["meta"] = {**cached.get("meta", {}), "cache": "hit", "index_generation": generation}
-                return cached
-
         rows = search_documents(
             self.db,
             query=policy.effective_query,
@@ -108,11 +86,8 @@ class SearchService:
                 {"index_generation": generation},
                 has_more=has_more,
             ),
-            "meta": {"cache": "miss", "index_generation": generation, "refresh": refresh_status},
+            "meta": {"cache": "not_used", "index_generation": generation, "refresh": refresh_status},
         }
-        query_cache_set(
-            self.db, policy.cache_key, response, generation, ttl_seconds=self.settings.query_cache_ttl_seconds
-        )
         return response
 
 
@@ -145,35 +120,6 @@ def answer_hints(query: str, results: list[dict[str, Any]], intent: str = "gener
     if len(results) > 1 and abs(float(results[0].get("score", 0.0)) - float(results[1].get("score", 0.0))) < 0.05:
         return [{"type": "ambiguous_candidates", "source_ids": [row["id"] for row in results[:3]]}]
     return []
-
-
-def search_documents(
-    db: Database,
-    *,
-    query: str,
-    domains: list[str],
-    limit: int,
-    offset: int,
-    snippet_chars: int,
-    start: str | None = None,
-    end: str | None = None,
-    person: str | None = None,
-) -> list[dict[str, Any]]:
-    """Read compact search rows through the local search index seam."""
-
-    return search_index(
-        db,
-        SearchIndexQuery(
-            query=query,
-            domains=domains,
-            limit=limit,
-            offset=offset,
-            snippet_chars=snippet_chars,
-            start=start,
-            end=end,
-            person=person,
-        ),
-    )
 
 
 def _compact_content(rows: list[dict[str, Any]]) -> str:

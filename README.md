@@ -6,7 +6,7 @@
 
 [![CI/CD](https://img.shields.io/github/actions/workflow/status/denisdasilvarocha/icloud-mcp-server/ci-cd.yml?branch=main&style=flat-square&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/denisdasilvarocha/icloud-mcp-server/actions/workflows/ci-cd.yml) [![Python](https://img.shields.io/badge/Python-%3E%3D3.11-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/) [![FastMCP](https://img.shields.io/badge/FastMCP-server-111827?style=flat-square)](https://github.com/jlowin/fastmcp) [![uv](https://img.shields.io/badge/uv-managed-654FF0?style=flat-square)](https://docs.astral.sh/uv/) [![Ruff](https://img.shields.io/badge/code_style-ruff-46A5E5?style=flat-square)](https://docs.astral.sh/ruff/) [![Version](https://img.shields.io/badge/version-0.1.0-31c48d?style=flat-square)](pyproject.toml)
 
-[Features](#features) · [Setup](#setup) · [MCP Tools](#mcp-tools) · [Configuration](#configuration) · [Development](#development)
+[Features](#features) · [Setup](#setup) · [MCP Tools](#mcp-tools) · [Configuration](#configuration-variables) · [Development](#development)
 
 <img src=".github/assets/dashboard.png" alt="iCloud MCP Server dashboard" width="1440">
 
@@ -154,44 +154,27 @@ It then writes the MCP client configuration for the selected agent.
 
 Docker Compose is the recommended option when you want an isolated, always-on local server.
 
-Start the container:
+Build and Start the container:
 
 ```bash
 ./scripts/setup.sh docker
 ```
 
-Compose creates a container named:
-
-```text
-icloud-mcp-server
-```
-
-The SQLite cache is stored in the `icloud-mcp-data` volume at:
-
-```text
-/data/icloud-mcp.sqlite3
-```
-
-MCP clients connect to the running container with:
-
-```bash
-docker exec -i icloud-mcp-server icloud-mcp
-```
-
-Docker cannot read your host OS keychain. Provide `ICLOUD_APP_PASSWORD` during setup or through your own Compose override.
-
-The dashboard is published on host loopback ports `8765-8814`, so dashboard links returned by the MCP tool can be opened from your host browser.
-
-### Docker Payload
+### Config
 
 ```json
 {
-  "command": "docker",
-  "args": ["exec", "-i", "icloud-mcp-server", "icloud-mcp"]
+  "mcpServers": {
+    "icloud-mcp": {
+      "type": "stdio",
+      "command": "docker",
+      "args": ["exec", "-i", "icloud-mcp-server", "icloud-mcp"]
+    }
+  }
 }
 ```
 
-## Manual Run
+## Configure Manually
 
 The package exposes one stdio MCP entrypoint:
 
@@ -199,27 +182,78 @@ The package exposes one stdio MCP entrypoint:
 uv run icloud-mcp
 ```
 
-### Manual Payload
+#### Claude Code
+Claude Code reads MCP servers from `.mcp.json` for project scope or `~/.claude.json` for user/local scope:
 
 ```json
 {
-  "command": "uv",
-  "args": ["run", "--project", "/path/to/icloud-mcp-server", "icloud-mcp"],
-  "cwd": "/path/to/icloud-mcp-server",
-  "env": {
-    "ICLOUD_APPLE_ID": "you@example.com",
-    "ICLOUD_MCP_SYNC_ON_START": "true"
+  "mcpServers": {
+    "icloud-mcp": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/icloud-mcp-server", "icloud-mcp"],
+      "env": {
+        "ICLOUD_APPLE_ID": "you@example.com",
+        "ICLOUD_MCP_SYNC_ON_START": "true"
+      }
+    }
   }
 }
 ```
+#### Codex
+Codex reads MCP servers from `.codex/config.toml` for project scope or `~/.codex/config.toml` for user scope:
 
-When keychain storage is disabled or unavailable, also provide:
+```toml
+[mcp_servers.icloud-mcp]
+command = "uv"
+args = ["run", "--project", "/path/to/icloud-mcp-server", "icloud-mcp"]
+cwd = "/path/to/icloud-mcp-server"
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+
+[mcp_servers.icloud-mcp.env]
+ICLOUD_APPLE_ID = "you@example.com"
+ICLOUD_MCP_SYNC_ON_START = "true"
+```
+
+#### Hermes Agent
+Hermes Agent reads MCP servers from `.hermes/config.yaml` for project scope or `~/.hermes/config.yaml` for user scope:
+
+```yaml
+mcp_servers:
+  icloud-mcp:
+    command: "uv"
+    args:
+      - "run"
+      - "--project"
+      - "/path/to/icloud-mcp-server"
+      - "icloud-mcp"
+    env:
+      ICLOUD_APPLE_ID: "${ICLOUD_APPLE_ID}"
+      ICLOUD_MCP_SYNC_ON_START: "${ICLOUD_MCP_SYNC_ON_START}"
+    enabled: true
+    timeout: 120
+    connect_timeout: 60
+    tools:
+      resources: true
+      prompts: true
+```
+
+For Hermes Agent, put matching values in `.hermes/.env` or `~/.hermes/.env`:
+
+```dotenv
+ICLOUD_APPLE_ID="you@example.com"
+ICLOUD_MCP_SYNC_ON_START="true"
+```
+
+When keychain storage is disabled or unavailable, also provide `ICLOUD_APP_PASSWORD` in the client `env` block or Hermes `.env` file:
 
 ```json
 "ICLOUD_APP_PASSWORD": "aaaa-bbbb-cccc-dddd"
 ```
 
-## Configuration
+## Configuration Variables
 
 Runtime settings are read from environment variables defined in your MCP server configuration.
 
@@ -236,14 +270,12 @@ Runtime settings are read from environment variables defined in your MCP server 
 | `ICLOUD_MCP_CALENDAR_PAST_MONTHS` | `24` | Calendar past sync window |
 | `ICLOUD_MCP_CALENDAR_FUTURE_MONTHS` | `36` | Calendar future sync window |
 | `ICLOUD_MCP_MAIL_INDEX_BODY_CHARS` | `16000` | Mail body characters indexed for search |
-| `ICLOUD_MCP_QUERY_CACHE_TTL_SECONDS` | `300` | Query cache TTL, clamped up to 1800 |
 | `ICLOUD_MCP_CURSOR_SECRET` | generated | Cursor signing secret |
 | `ICLOUD_MCP_USE_KEYCHAIN` | `true` | Use OS keychain fallback for credentials |
 | `ICLOUD_MCP_DASHBOARD_HOST` | `127.0.0.1` | Dashboard bind host |
 | `ICLOUD_MCP_DASHBOARD_PUBLIC_HOST` | `127.0.0.1` | Hostname shown in dashboard URLs |
 | `ICLOUD_MCP_DASHBOARD_PORT` | `8765` | First dashboard port to try |
 | `ICLOUD_MCP_DASHBOARD_ALLOW_EXTERNAL_BIND` | `false` | Allow non-loopback dashboard bind host while keeping the public host loopback |
-| `ICLOUD_MCP_ATTACHMENT_TEXT_INDEXING` | `false` | Include attachment text in indexing |
 | `ICLOUD_MCP_ALLOW_UNREDACTED_DEBUG` | `false` | Allow unredacted debug errors |
 
 > [!WARNING]
@@ -276,7 +308,7 @@ uv run ruff check .
 uv run ruff format .
 ```
 
-## Project Structure
+## Structure
 
 ```text
 src/icloud_mcp/
@@ -284,7 +316,7 @@ src/icloud_mcp/
   mail/         IMAP sync, cache reads, and Mail tools
   calendar/     CalDAV sync, event cache, validation, and write service
   contacts/     CardDAV sync, contact cache, and Contacts tools
-  search/       Query planning, FTS, snippets, embeddings, and ranking
+  search/       Query planning, FTS, snippets, and ranking
   sync/         Scheduler, worker checkpoints, delta helpers, sync tools
   dashboard/    Local HTTP dashboard runtime and lifecycle tools
   storage/      SQLite connection, schema, migrations, cache state

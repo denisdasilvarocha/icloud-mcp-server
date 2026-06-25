@@ -11,26 +11,18 @@ requires-python = ">=3.11"
 dependencies = [
   "fastmcp",
   "pydantic",
-  "pydantic-settings",
   "imapclient",
   "caldav",
   "httpx",
   "vobject",
   "icalendar",
   "python-dateutil",
-  "beautifulsoup4",
-  "lxml",
   "defusedxml",
-  "aiosqlite",
   "keyring",
-  "orjson",
-  "tenacity",
-  "sqlite-vec>=0.1.9",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "coverage[toml]",
   "ruff",
 ]
 
@@ -51,14 +43,3 @@ indent-style = "space"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/icloud_mcp"]
-
-[tool.coverage.run]
-source = ["src/icloud_mcp"]
-branch = false
-relative_files = true
-
-[tool.coverage.report]
-fail_under = 100
-show_missing = true
-skip_empty = true
-precision = 2

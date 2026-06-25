@@ -49,7 +49,10 @@ class DockerAssetsTests(unittest.TestCase):
         self.assertEqual(setup_scripts, ["setup.sh"])
         self.assertEqual(setup_libs, [])
         self.assertNotIn('source "$(cd', setup)
-        self.assertLess(setup.index('PYTHON_BIN="$(find_python)"'), setup.index('write_env_file "$ENV_PATH"'))
+        docker_flow = setup[setup.index("setup_docker()") :]
+        self.assertLess(
+            docker_flow.index('PYTHON_BIN="$(find_python)"'), docker_flow.index('write_env_file "$env_path"')
+        )
 
 
 if __name__ == "__main__":

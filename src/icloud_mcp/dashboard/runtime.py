@@ -393,8 +393,6 @@ class DashboardSnapshotPresenter:
                 "mail_sync_limit_per_mailbox": self.settings.mail_sync_limit_per_mailbox,
                 "calendar_past_months": self.settings.calendar_past_months,
                 "calendar_future_months": self.settings.calendar_future_months,
-                "query_cache_ttl_seconds": self.settings.query_cache_ttl_seconds,
-                "attachment_text_indexing": self.settings.attachment_text_indexing,
                 "workers": list(workers),
             },
         }
@@ -583,8 +581,6 @@ def _counts(db: Database) -> dict[str, int]:
         "contacts": "SELECT COUNT(*) AS value FROM contacts WHERE deleted_at IS NULL",
         "search_documents": "SELECT COUNT(*) AS value FROM search_documents WHERE deleted_at IS NULL",
         "search_chunks": "SELECT COUNT(*) AS value FROM search_chunks",
-        "pending_embeddings": "SELECT COUNT(*) AS value FROM search_chunks WHERE embedding_status = 'pending'",
-        "query_cache": "SELECT COUNT(*) AS value FROM query_cache",
     }
     counts: dict[str, int] = {}
     for name, sql in queries.items():
@@ -622,20 +618,15 @@ def _make_handler(runtime: DashboardRuntime) -> type[BaseHTTPRequestHandler]:
             return
 
         def _send_html(self, html: str) -> None:
-            body = html.encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_body(html.encode("utf-8"), "text/html; charset=utf-8")
 
         def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
             body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            self._send_body(body, "application/json", status=status)
+
+        def _send_body(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Referrer-Policy", "no-referrer")

@@ -14,7 +14,6 @@ from icloud_mcp.contacts.sync import ContactsSyncWorker
 from icloud_mcp.mail.sync import MailBackfillWorker, MailSyncWorker
 from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.metrics import record_metric
-from icloud_mcp.search.embeddings import EmbeddingWorker
 from icloud_mcp.search.maintenance import cleanup_local_index
 from icloud_mcp.storage.connection import Database
 from icloud_mcp.sync.checkpoints import (
@@ -33,7 +32,6 @@ WORKERS = [
     "calendar_sync_worker",
     "contacts_sync_worker",
     "indexer_worker",
-    "embedding_worker",
     "maintenance_worker",
 ]
 _WORKER_LOCKS = {name: threading.Lock() for name in WORKERS}
@@ -95,14 +93,12 @@ class SyncScheduler:
             ]:
                 results[worker.name] = self._run_worker_with_gate(worker)
             update_checkpoint(self.db, "indexer_worker", "ok", {"mode": "inline_fts"})
-            results["embedding_worker"] = EmbeddingWorker(self.db).run_once()
-            self.db.execute("DELETE FROM query_cache WHERE expires_at < datetime('now')")
             cleanup = cleanup_local_index(self.db)
             update_checkpoint(
                 self.db,
                 "maintenance_worker",
                 "ok",
-                {"expired_query_cache_removed": True, **cleanup},
+                cleanup,
             )
             return results
         finally:
