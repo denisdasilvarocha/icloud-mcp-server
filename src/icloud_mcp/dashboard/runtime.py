@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import socket
 import threading
 from dataclasses import dataclass, field
 from hmac import compare_digest
@@ -34,61 +35,14 @@ DASHBOARD_HTML = r"""<html lang="en"><head>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <title>iCloud MCP Dashboard</title>
+<script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
 <style>
-* { box-sizing: border-box; }
-body { margin: 0; min-height: 100vh; background: #f8fafc; color: #0f172a; font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-nav { position: sticky; top: 0; z-index: 50; background: #fff; border-bottom: 1px solid #e2e8f0; }
-nav > div, main { max-width: 80rem; margin: 0 auto; padding-left: 1rem; padding-right: 1rem; }
-nav > div > div { height: 3.5rem; display: flex; align-items: center; justify-content: space-between; }
-main { padding-top: 2rem; padding-bottom: 2rem; }
-main > * + * { margin-top: 2rem; }
-header, header > div:last-child, .flex { display: flex; }
-header { flex-direction: column; gap: 1rem; justify-content: space-between; }
-header > div:last-child, .items-center { align-items: center; }
-.justify-between { justify-content: space-between; }
-.gap-2 { gap: .5rem; } .gap-3 { gap: .75rem; } .gap-4 { gap: 1rem; }
-h1 { margin: 0; font-size: 1.875rem; line-height: 2.25rem; font-weight: 500; }
-h2 { margin: 0; font-size: .875rem; font-weight: 500; }
-p { margin: .25rem 0 0; color: #64748b; }
-button { border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; color: #334155; padding: .5rem 1rem; font: inherit; cursor: pointer; box-shadow: 0 1px 2px rgb(15 23 42 / .06); }
-button:hover { background: #f8fafc; color: #0f172a; }
-button:disabled { opacity: .5; cursor: not-allowed; }
-#syncBtn { background: #0f172a; border-color: #0f172a; color: #fff; }
-#syncBtn:hover { background: #1e293b; }
-.grid { display: grid; gap: 1rem; }
-.grid-cols-1 { grid-template-columns: 1fr; }
-.bg-white { background: #fff; }
-.rounded-lg { border-radius: 8px; }
-.border, .border-b { border-color: #e2e8f0; border-style: solid; }
-.border { border-width: 1px; } .border-b { border-width: 0 0 1px; }
-.shadow-sm { box-shadow: 0 1px 2px rgb(15 23 42 / .06); }
-.p-5 { padding: 1.25rem; }
-.px-5 { padding-left: 1.25rem; padding-right: 1.25rem; }
-.py-3 { padding-top: .75rem; padding-bottom: .75rem; }
-.py-4 { padding-top: 1rem; padding-bottom: 1rem; }
-.space-y-8 > * + * { margin-top: 2rem; }
-.overflow-hidden { overflow: hidden; } .overflow-x-auto { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; text-align: left; white-space: nowrap; }
-th { color: #64748b; font-size: .75rem; font-weight: 400; }
-td, th { padding: .75rem 1.25rem; border-bottom: 1px solid #f1f5f9; }
-tbody tr:hover, li:hover { background: #f8fafc; }
-ul { margin: 0; padding: 0; list-style: none; }
-li { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid #f1f5f9; }
-.text-xs { font-size: .75rem; } .text-sm { font-size: .875rem; } .text-lg { font-size: 1.125rem; } .text-xl { font-size: 1.25rem; }
-.font-medium { font-weight: 500; } .uppercase { text-transform: uppercase; } .capitalize { text-transform: capitalize; }
-.text-slate-500 { color: #64748b; } .text-slate-700 { color: #334155; } .text-slate-900 { color: #0f172a; }
-.text-emerald-600 { color: #059669; } .text-red-600 { color: #dc2626; } .text-amber-600 { color: #d97706; }
-.bg-emerald-500 { background: #10b981; } .bg-red-500 { background: #ef4444; } .bg-amber-500 { background: #f59e0b; }
-.bg-slate-100 { background: #f1f5f9; } .bg-slate-300 { background: #cbd5e1; }
-.bg-emerald-100 { background: #d1fae5; } .bg-red-100 { background: #fee2e2; } .bg-amber-100 { background: #fef3c7; }
-.w-1\.5, .h-1\.5 { width: .375rem; height: .375rem; } .w-28 { width: 7rem; }
-.h-1\.5 { height: .375rem; } .h-full { height: 100%; }
-.rounded-full { border-radius: 999px; }
-.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-iconify-icon { display: none; }
-@media (min-width: 640px) { header { flex-direction: row; align-items: center; } }
-@media (min-width: 768px) { .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (min-width: 1024px) { .lg\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); } .lg\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); } .lg\:col-span-2 { grid-column: span 2 / span 2; } .lg\:col-span-1 { grid-column: span 1 / span 1; } }
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 </style>
 </head>
 <body class="bg-slate-50 text-slate-900 font-sans antialiased text-sm min-h-screen selection:bg-blue-100 selection:text-blue-900">
@@ -401,6 +355,89 @@ iconify-icon { display: none; }
 
 
 @dataclass
+class DashboardSnapshotPresenter:
+    """Shape dashboard snapshot data for HTTP and MCP status consumers."""
+
+    settings: Settings
+    version: str = __version__
+
+    def snapshot(
+        self,
+        *,
+        generated_at: str,
+        status: dict[str, Any],
+        scheduler_status: dict[str, Any],
+        manual_sync: dict[str, Any],
+        metrics: dict[str, Any],
+        counts: dict[str, int],
+    ) -> dict[str, Any]:
+        """Build the dashboard operational snapshot from collected local state."""
+
+        workers = status.get("workers", {})
+        return {
+            "generated_at": generated_at,
+            "health": self.health(status),
+            "activity": self.activity(status, scheduler_status, manual_sync),
+            "sync": status,
+            "scheduler": scheduler_status,
+            "manual_sync": manual_sync,
+            "metrics": metrics,
+            "counts": counts,
+            "info": {
+                "version": self.version,
+                "database_path": str(self.settings.database_path),
+                "sync_on_start": self.settings.sync_on_start,
+                "sync_interval_seconds": self.settings.sync_interval_seconds,
+                "stale_after_seconds": self.settings.stale_after_seconds,
+                "mail_sync_days": self.settings.mail_sync_days,
+                "mail_sync_limit_per_mailbox": self.settings.mail_sync_limit_per_mailbox,
+                "calendar_past_months": self.settings.calendar_past_months,
+                "calendar_future_months": self.settings.calendar_future_months,
+                "workers": list(workers),
+            },
+        }
+
+    @staticmethod
+    def health(status: dict[str, Any]) -> dict[str, str]:
+        freshness = status.get("freshness_status", {})
+        domain_states = [str(value.get("status")) for value in freshness.values() if isinstance(value, dict)]
+        workers = status.get("workers", {})
+        worker_states = [str(value.get("status")) for value in workers.values() if isinstance(value, dict)]
+        if any(state in {"error", "dead_letter", "backoff"} for state in worker_states):
+            return {"status": "degraded", "reason": "one or more sync workers need attention"}
+        if any(state == "never_synced" for state in domain_states):
+            return {"status": "not_synced", "reason": "one or more domains have not synced yet"}
+        if any(state == "stale" for state in domain_states):
+            return {"status": "degraded", "reason": "one or more domains are stale"}
+        if any(state == "running" for state in worker_states):
+            return {"status": "syncing", "reason": "sync workers are running"}
+        return {"status": "healthy", "reason": "local cache is within freshness threshold"}
+
+    @staticmethod
+    def activity(
+        status: dict[str, Any], scheduler_status: dict[str, Any], manual_sync: dict[str, Any]
+    ) -> dict[str, Any]:
+        workers = status.get("workers", {})
+        running_workers = sorted(
+            name for name, worker in workers.items() if isinstance(worker, dict) and worker.get("status") == "running"
+        )
+        attention_workers = sorted(
+            name
+            for name, worker in workers.items()
+            if isinstance(worker, dict) and worker.get("status") in {"error", "dead_letter", "backoff"}
+        )
+        return {
+            "live": bool(running_workers or manual_sync.get("running")),
+            "running_workers": running_workers,
+            "attention_workers": attention_workers,
+            "next_run_at": scheduler_status.get("next_run_at"),
+            "last_cycle_started_at": scheduler_status.get("last_cycle_started_at"),
+            "last_cycle_finished_at": scheduler_status.get("last_cycle_finished_at"),
+            "manual_sync_running": bool(manual_sync.get("running")),
+        }
+
+
+@dataclass
 class DashboardRuntime:
     """Own one localhost dashboard server per MCP process."""
 
@@ -469,8 +506,7 @@ class DashboardRuntime:
         status = sync_status(self.db, self.settings.stale_after_seconds)
         scheduler_status = self.scheduler.status()
         manual_sync = self._manual_sync_snapshot()
-        return _snapshot(
-            self.settings,
+        return DashboardSnapshotPresenter(self.settings).snapshot(
             generated_at=utc_now(),
             status=status,
             scheduler_status=scheduler_status,
@@ -530,76 +566,12 @@ class DashboardRuntime:
             self._manual_sync_state.update(updates)
 
 
-def _snapshot(
-    settings: Settings,
-    *,
-    generated_at: str,
-    status: dict[str, Any],
-    scheduler_status: dict[str, Any],
-    manual_sync: dict[str, Any],
-    metrics: dict[str, Any],
-    counts: dict[str, int],
-) -> dict[str, Any]:
-    workers = status.get("workers", {})
-    return {
-        "generated_at": generated_at,
-        "health": _health(status),
-        "activity": _activity(status, scheduler_status, manual_sync),
-        "sync": status,
-        "scheduler": scheduler_status,
-        "manual_sync": manual_sync,
-        "metrics": metrics,
-        "counts": counts,
-        "info": {
-            "version": __version__,
-            "database_path": str(settings.database_path),
-            "sync_on_start": settings.sync_on_start,
-            "sync_interval_seconds": settings.sync_interval_seconds,
-            "stale_after_seconds": settings.stale_after_seconds,
-            "mail_sync_days": settings.mail_sync_days,
-            "mail_sync_limit_per_mailbox": settings.mail_sync_limit_per_mailbox,
-            "calendar_past_months": settings.calendar_past_months,
-            "calendar_future_months": settings.calendar_future_months,
-            "workers": list(workers),
-        },
-    }
-
-
 def _health(status: dict[str, Any]) -> dict[str, str]:
-    freshness = status.get("freshness_status", {})
-    domain_states = [str(value.get("status")) for value in freshness.values() if isinstance(value, dict)]
-    workers = status.get("workers", {})
-    worker_states = [str(value.get("status")) for value in workers.values() if isinstance(value, dict)]
-    if any(state in {"error", "dead_letter", "backoff"} for state in worker_states):
-        return {"status": "degraded", "reason": "one or more sync workers need attention"}
-    if any(state == "never_synced" for state in domain_states):
-        return {"status": "not_synced", "reason": "one or more domains have not synced yet"}
-    if any(state == "stale" for state in domain_states):
-        return {"status": "degraded", "reason": "one or more domains are stale"}
-    if any(state == "running" for state in worker_states):
-        return {"status": "syncing", "reason": "sync workers are running"}
-    return {"status": "healthy", "reason": "local cache is within freshness threshold"}
+    return DashboardSnapshotPresenter.health(status)
 
 
 def _activity(status: dict[str, Any], scheduler_status: dict[str, Any], manual_sync: dict[str, Any]) -> dict[str, Any]:
-    workers = status.get("workers", {})
-    running_workers = sorted(
-        name for name, worker in workers.items() if isinstance(worker, dict) and worker.get("status") == "running"
-    )
-    attention_workers = sorted(
-        name
-        for name, worker in workers.items()
-        if isinstance(worker, dict) and worker.get("status") in {"error", "dead_letter", "backoff"}
-    )
-    return {
-        "live": bool(running_workers or manual_sync.get("running")),
-        "running_workers": running_workers,
-        "attention_workers": attention_workers,
-        "next_run_at": scheduler_status.get("next_run_at"),
-        "last_cycle_started_at": scheduler_status.get("last_cycle_started_at"),
-        "last_cycle_finished_at": scheduler_status.get("last_cycle_finished_at"),
-        "manual_sync_running": bool(manual_sync.get("running")),
-    }
+    return DashboardSnapshotPresenter.activity(status, scheduler_status, manual_sync)
 
 
 def _counts(db: Database) -> dict[str, int]:
@@ -622,7 +594,7 @@ def _make_handler(runtime: DashboardRuntime) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             path = urlparse(self.path).path
             if path in {"/", "/dashboard"}:
-                self._send_html(DASHBOARD_HTML)
+                self._send_html(_dashboard_html())
                 return
             if path == "/api/status":
                 if not self._authorized():
@@ -683,3 +655,20 @@ def _ensure_dashboard_hosts(host: str, public_host: str, allow_external_bind: bo
         return
     if not allow_external_bind:
         raise RuntimeError("dashboard host must be loopback-only")
+
+
+def _dashboard_html() -> str:
+    """Return the bundled local dashboard HTML."""
+
+    return DASHBOARD_HTML
+
+
+def localhost_port_available(host: str, port: int) -> bool:
+    """Return whether a local TCP port can be bound."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
