@@ -8,14 +8,12 @@ from http import HTTPStatus
 from unittest.mock import patch
 
 from icloud_mcp.dashboard.runtime import (
+    DASHBOARD_HTML,
     DASHBOARD_TOKEN_HEADER,
     DashboardRuntime,
-    DashboardSnapshotPresenter,
     _activity,
-    _dashboard_html,
     _health,
     _make_handler,
-    localhost_port_available,
 )
 from icloud_mcp.mcp.server import create_server
 from icloud_mcp.platform.config import Settings
@@ -100,7 +98,7 @@ class DashboardTests(unittest.TestCase):
         self.assertTrue(accepted["accepted"])
         self.assertEqual(status["manual_sync"]["last_result"], {"status": "error", "error": "RuntimeError"})
 
-    def test_dashboard_port_fallback_and_localhost_probe(self) -> None:
+    def test_dashboard_port_fallback(self) -> None:
         blocked_port = 8765
         servers = []
 
@@ -117,10 +115,6 @@ class DashboardTests(unittest.TestCase):
                 started = dashboard.start()
             self.assertTrue(started["running"])
             self.assertEqual(started["port"], blocked_port + 1)
-            with patch("icloud_mcp.dashboard.runtime.socket.socket", return_value=_FakeSocket()):
-                self.assertTrue(localhost_port_available("127.0.0.1", 0))
-            with patch("icloud_mcp.dashboard.runtime.socket.socket", return_value=_FakeSocket(should_raise=True)):
-                self.assertFalse(localhost_port_available("127.0.0.1", 0))
         finally:
             dashboard.stop()
         self.assertTrue(servers[0].closed)
@@ -242,14 +236,14 @@ class DashboardTests(unittest.TestCase):
         self.assertNotIn("app_password", json.dumps(snapshot))
 
     def test_health_classification_edges(self) -> None:
-        health = DashboardSnapshotPresenter.health
-
-        self.assertEqual(health({"freshness_status": {}, "workers": {"x": {"status": "running"}}})["status"], "syncing")
         self.assertEqual(
-            health({"freshness_status": {"mail": {"status": "stale"}}, "workers": {}})["status"], "degraded"
+            _health({"freshness_status": {}, "workers": {"x": {"status": "running"}}})["status"], "syncing"
         )
         self.assertEqual(
-            health({"freshness_status": {"mail": {"status": "healthy"}}, "workers": {}})["status"], "healthy"
+            _health({"freshness_status": {"mail": {"status": "stale"}}, "workers": {}})["status"], "degraded"
+        )
+        self.assertEqual(
+            _health({"freshness_status": {"mail": {"status": "healthy"}}, "workers": {}})["status"], "healthy"
         )
         self.assertEqual(_health({"freshness_status": {}, "workers": {}})["status"], "healthy")
         self.assertFalse(
@@ -261,11 +255,9 @@ class DashboardTests(unittest.TestCase):
         )
 
     def test_dashboard_renders_worker_progress_bar(self) -> None:
-        html = _dashboard_html()
-
-        self.assertIn("const progressBar = (worker)", html)
-        self.assertIn("X-iCloud-MCP-Dashboard-Token", html)
-        self.assertNotIn('text(worker.progress_cursor, "N/A")', html)
+        self.assertIn("const progressBar = (worker)", DASHBOARD_HTML)
+        self.assertIn("X-iCloud-MCP-Dashboard-Token", DASHBOARD_HTML)
+        self.assertNotIn('text(worker.progress_cursor, "N/A")', DASHBOARD_HTML)
 
 
 class _FakeScheduler:
@@ -306,22 +298,6 @@ class _FakeHTTPServer:
 
     def server_close(self) -> None:
         self.closed = True
-
-
-class _FakeSocket:
-    def __init__(self, should_raise: bool = False) -> None:
-        self.should_raise = should_raise
-
-    def __enter__(self) -> _FakeSocket:
-        return self
-
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-        return None
-
-    def bind(self, address: tuple[str, int]) -> None:
-        if self.should_raise:
-            raise OSError("occupied")
-        return None
 
 
 if __name__ == "__main__":

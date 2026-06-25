@@ -7,12 +7,10 @@ from typing import Any
 
 from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.util import next_cursor, tokenize
-from icloud_mcp.search.policy import _external_domains, _refresh_status, resolve_search_policy
+from icloud_mcp.search.policy import _refresh_status, resolve_search_policy
 from icloud_mcp.search.repository import person_alias_terms, search_documents
 from icloud_mcp.storage.cache_state import freshness, freshness_status, index_generation
 from icloud_mcp.storage.connection import Database
-
-__all__ = ["SearchService", "answer_hints", "_external_domains", "_refresh_status"]
 
 
 class SearchService:

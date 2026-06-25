@@ -16,7 +16,6 @@ from icloud_mcp.platform import dav_xml
 
 DAV_NS = "DAV:"
 NS = {"d": DAV_NS}
-WebDAVSyncChange = dav_xml.WebDAVSyncChange
 WebDAVSyncResult = dav_xml.WebDAVSyncResult
 sync_collection_body = dav_xml.sync_collection_body
 
@@ -79,11 +78,6 @@ class CalDAVCalendarAdapter:
 
     def __init__(self, config: CalDAVConfig | None = None) -> None:
         self.config = config or CalDAVConfig()
-
-    def configured(self, apple_id: str | None, app_password: str | None) -> bool:
-        """Return whether credentials are available out-of-band."""
-
-        return bool(apple_id and app_password)
 
     def discover(self, *, apple_id: str, app_password: str) -> list[SyncedCalendar]:
         """Discover iCloud calendars through CalDAV principal."""
@@ -222,11 +216,7 @@ def _calendar_from_object(calendar: Any) -> SyncedCalendar:
 
 def _sync_collection(client: Any, url: str, sync_token: str | None) -> WebDAVSyncResult:
     response = client.report(url, sync_collection_body(sync_token), depth=1)
-    return _parse_sync_collection_response(_response_text(response))
-
-
-def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
-    return dav_xml.parse_sync_collection_result(xml_text)
+    return dav_xml.parse_sync_collection_result(_response_text(response))
 
 
 def _response_text(response: Any) -> str:

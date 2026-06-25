@@ -9,11 +9,10 @@ from icloud_mcp.calendar.cache import (
     update_calendar_event,
     upsert_calendar_collection,
     upsert_calendar_object,
-    validate_event_input,
-    validate_event_patch,
 )
 from icloud_mcp.calendar.schemas import UpdateEventInput
 from icloud_mcp.calendar.tools import register_calendar_tools
+from icloud_mcp.calendar.validation import validate_event_input, validate_event_patch
 from icloud_mcp.contacts.cache import (
     list_contacts,
     search_contacts,

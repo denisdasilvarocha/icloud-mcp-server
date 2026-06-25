@@ -7,15 +7,13 @@ from email.message import Message
 
 from icalendar import Calendar
 
-from icloud_mcp.calendar.adapter import CalDAVCalendarAdapter, _parse_sync_collection_response, _synced_event
+from icloud_mcp.calendar.adapter import CalDAVCalendarAdapter, _synced_event
 from icloud_mcp.calendar.cache import build_ics
 from icloud_mcp.contacts.adapter import (
     _contact_from_vcard,
 )
-from icloud_mcp.contacts.adapter import (
-    _parse_sync_collection_response as _parse_carddav_sync_collection_response,
-)
 from icloud_mcp.mail.adapter import _message_from_email, _message_id
+from icloud_mcp.platform.dav_xml import parse_sync_collection_result
 
 
 class ProtocolAdapterParsingTests(unittest.TestCase):
@@ -194,7 +192,7 @@ END:VCARD
         self.assertIn("Project Sponsor", aliases)
 
     def test_carddav_sync_collection_parser_extracts_changed_and_deleted_hrefs(self) -> None:
-        parsed = _parse_carddav_sync_collection_response(
+        parsed = parse_sync_collection_result(
             """<?xml version="1.0" encoding="utf-8" ?>
 <d:multistatus xmlns:d="DAV:">
   <d:sync-token>sync-token-2</d:sync-token>
@@ -284,7 +282,7 @@ END:VCALENDAR
         self.assertEqual(first.etag, '"v1"')
 
     def test_caldav_sync_collection_parser_extracts_changed_and_deleted_hrefs(self) -> None:
-        parsed = _parse_sync_collection_response(
+        parsed = parse_sync_collection_result(
             """<?xml version="1.0" encoding="utf-8" ?>
 <d:multistatus xmlns:d="DAV:">
   <d:sync-token>sync-token-3</d:sync-token>

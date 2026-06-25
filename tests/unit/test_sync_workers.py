@@ -32,13 +32,9 @@ from icloud_mcp.sync.scheduler import SyncScheduler
 
 class FakeMailAdapter:
     def sync_incremental(self, **kwargs):
-        mailboxes, messages = self.sync_recent(**kwargs)
-        return IMAPSyncDelta(mailboxes=mailboxes, messages=messages, deleted=[])
-
-    def sync_recent(self, **kwargs):
-        return (
-            [SyncedMailbox(id="mb_inbox", name="INBOX", uid_validity="1", uid_next=2, highest_modseq=None)],
-            [
+        return IMAPSyncDelta(
+            mailboxes=[SyncedMailbox(id="mb_inbox", name="INBOX", uid_validity="1", uid_next=2, highest_modseq=None)],
+            messages=[
                 SyncedMailMessage(
                     id="mail_msg_1",
                     mailbox_id="mb_inbox",
@@ -56,14 +52,12 @@ class FakeMailAdapter:
                     has_attachments=False,
                 )
             ],
+            deleted=[],
         )
 
 
 class FailingMailAdapter:
     def sync_incremental(self, **kwargs):
-        raise RuntimeError("app password expired for user@example.com")
-
-    def sync_recent(self, **kwargs):
         raise RuntimeError("app password expired for user@example.com")
 
 

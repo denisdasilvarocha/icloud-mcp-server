@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastmcp.tools import ToolResult
 
-from icloud_mcp.mcp.boundary import cursor_state_or_error, search_tool_result, tool_error_result
+from icloud_mcp.mcp.boundary import cursor_state_or_error
 from icloud_mcp.platform.config import Settings
 from icloud_mcp.search.service import SearchService
 from icloud_mcp.storage.connection import Database
@@ -34,7 +34,7 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
 
         cursor_payload, error = cursor_state_or_error(cursor, settings.cursor_secret)
         if error:
-            return tool_error_result(error)
+            return ToolResult(content="", structured_content=error, meta=error)
         result = SearchService(db, settings).search(
             query=query,
             domains=list(domains) if domains else None,
@@ -46,7 +46,11 @@ def register_search_tools(mcp: object, db: Database, settings: Settings) -> None
             freshness_policy=freshness,
             cursor_payload=cursor_payload,
         )
-        return search_tool_result(result)
+        return ToolResult(
+            content=result["content"],
+            structured_content={key: value for key, value in result.items() if key != "content"},
+            meta=result.get("meta", {}),
+        )
 
     @mcp.tool(name="icloud.mail.search", annotations=READ_ANNOTATIONS)
     async def mail_search(

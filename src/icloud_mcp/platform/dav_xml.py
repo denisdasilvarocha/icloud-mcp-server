@@ -27,12 +27,6 @@ class WebDAVSyncResult:
     deleted: list[str]
 
 
-def parse_xml(xml_text: str) -> ElementTree.Element:
-    """Parse untrusted DAV XML with defusedxml."""
-
-    return ElementTree.fromstring(xml_text)
-
-
 def sync_collection_body(sync_token: str | None) -> str:
     """Build a minimal WebDAV sync-collection body."""
 
@@ -50,11 +44,11 @@ def sync_collection_body(sync_token: str | None) -> str:
     """.strip()
 
 
-def parse_sync_collection(xml_text: str) -> tuple[str | None, list[tuple[str, str | None]], list[str]]:
-    """Return sync token, changed hrefs/etags, and deleted hrefs."""
+def parse_sync_collection_result(xml_text: str) -> WebDAVSyncResult:
+    """Return parsed sync-collection result objects."""
 
-    root = parse_xml(xml_text)
-    changed: list[tuple[str, str | None]] = []
+    root = ElementTree.fromstring(xml_text)
+    changed: list[WebDAVSyncChange] = []
     deleted: list[str] = []
     for response in root.findall("d:response", NS):
         href = _text(response, "d:href")
@@ -64,17 +58,10 @@ def parse_sync_collection(xml_text: str) -> tuple[str | None, list[tuple[str, st
         if status and " 404 " in f" {status} ":
             deleted.append(href)
             continue
-        changed.append((href, _text(response, ".//d:getetag")))
-    return _text(root, "d:sync-token"), changed, deleted
-
-
-def parse_sync_collection_result(xml_text: str) -> WebDAVSyncResult:
-    """Return parsed sync-collection result objects."""
-
-    sync_token, changed, deleted = parse_sync_collection(xml_text)
+        changed.append(WebDAVSyncChange(href=href, etag=_text(response, ".//d:getetag")))
     return WebDAVSyncResult(
-        sync_token=sync_token,
-        changed=[WebDAVSyncChange(href=href, etag=etag) for href, etag in changed],
+        sync_token=_text(root, "d:sync-token"),
+        changed=changed,
         deleted=deleted,
     )
 

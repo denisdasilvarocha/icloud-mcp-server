@@ -276,7 +276,6 @@ Runtime settings are read from environment variables defined in your MCP server 
 | `ICLOUD_MCP_DASHBOARD_PUBLIC_HOST` | `127.0.0.1` | Hostname shown in dashboard URLs |
 | `ICLOUD_MCP_DASHBOARD_PORT` | `8765` | First dashboard port to try |
 | `ICLOUD_MCP_DASHBOARD_ALLOW_EXTERNAL_BIND` | `false` | Allow non-loopback dashboard bind host while keeping the public host loopback |
-| `ICLOUD_MCP_ATTACHMENT_TEXT_INDEXING` | `false` | Include attachment text in indexing |
 | `ICLOUD_MCP_ALLOW_UNREDACTED_DEBUG` | `false` | Allow unredacted debug errors |
 
 > [!WARNING]

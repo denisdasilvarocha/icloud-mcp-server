@@ -18,7 +18,6 @@ DAV_NS = "DAV:"
 CARDDAV_NS = "urn:ietf:params:xml:ns:carddav"
 CALSERVER_NS = "http://calendarserver.org/ns/"
 NS = {"d": DAV_NS, "card": CARDDAV_NS, "cs": CALSERVER_NS}
-WebDAVSyncChange = dav_xml.WebDAVSyncChange
 WebDAVSyncResult = dav_xml.WebDAVSyncResult
 sync_collection_body = dav_xml.sync_collection_body
 
@@ -67,11 +66,6 @@ class CardDAVContactsAdapter:
 
     def __init__(self, config: CardDAVConfig | None = None) -> None:
         self.config = config or CardDAVConfig()
-
-    def configured(self, apple_id: str | None, app_password: str | None) -> bool:
-        """Return whether credentials are available out-of-band."""
-
-        return bool(apple_id and app_password)
 
     def sync_contacts(self, *, apple_id: str, app_password: str) -> tuple[list[SyncedAddressBook], list[SyncedContact]]:
         """Discover addressbooks and fetch all vCards."""
@@ -254,10 +248,6 @@ def _report(client: httpx.Client, url: str, depth: int, body: str) -> ElementTre
 def _sync_collection(client: httpx.Client, url: str, sync_token: str | None) -> WebDAVSyncResult:
     root = _report(client, url, 1, sync_collection_body(sync_token))
     return _parse_sync_collection_root(root)
-
-
-def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
-    return dav_xml.parse_sync_collection_result(xml_text)
 
 
 def _parse_sync_collection_root(root: ElementTree.Element) -> WebDAVSyncResult:
