@@ -2,19 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from icloud_mcp.platform.util import compact_json, parse_json, utc_now
 from icloud_mcp.storage.connection import Database
-
-
-@dataclass(frozen=True)
-class TimingMetric:
-    """Simple timing metric shape for future middleware."""
-
-    name: str
-    duration_ms: float
 
 
 def record_metric(db: Database, name: str, value: float, tags: dict[str, Any] | None = None) -> None:

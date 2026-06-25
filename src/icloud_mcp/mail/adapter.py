@@ -481,12 +481,6 @@ def _message_date(message: Message, internal_date: Any) -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat()
 
 
-def _has_attachments(message: Message) -> bool:
-    return any(
-        _header_text(part.get("Content-Disposition")).lower().startswith("attachment") for part in message.walk()
-    )
-
-
 def _references(value: str) -> list[str]:
     return [part for part in value.split() if part]
 

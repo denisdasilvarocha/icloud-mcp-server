@@ -74,15 +74,3 @@ def register_calendar_tools(mcp: object, db: Database, settings: Settings) -> No
         """Update a full non-recurring event or recurring series."""
 
         return calendar_write_service.CalendarWriteService(db, settings).update_event(input.model_dump())
-
-
-def _calendar_for_write(*args: object, **kwargs: object) -> dict | None:
-    return calendar_write_service.calendar_for_write(*args, **kwargs)
-
-
-def _patched_ics(*args: object, **kwargs: object) -> str:
-    return calendar_write_service.patched_ics(*args, **kwargs)
-
-
-def _write_exception_status(*args: object, **kwargs: object) -> dict:
-    return calendar_write_service.write_exception_status(*args, **kwargs)

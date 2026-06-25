@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import logging
 import runpy
 import unittest
 from datetime import UTC, date, datetime
@@ -23,7 +22,8 @@ from icloud_mcp.calendar.cache import (
 )
 from icloud_mcp.calendar.schemas import CreateEventInput, UpdateEventInput
 from icloud_mcp.calendar.sync import CalendarSyncWorker
-from icloud_mcp.calendar.tools import _write_exception_status, register_calendar_tools
+from icloud_mcp.calendar.tools import register_calendar_tools
+from icloud_mcp.calendar.write import calendar_for_write, patched_ics, write_exception_status
 from icloud_mcp.contacts import adapter as carddav
 from icloud_mcp.contacts import cache as contacts_repository
 from icloud_mcp.contacts.cache import upsert_addressbook, upsert_contact
@@ -74,7 +74,6 @@ class CoverageEdgesTests(unittest.TestCase):
         self.db.close()
 
     def test_small_value_modules_and_util_edges(self) -> None:
-        importlib.import_module("icloud_mcp.storage.models")
         self.assertEqual(decode_cursor(None, "secret"), {"offset": 0})
         cursor = encode_cursor({"offset": 5}, "secret")
         self.assertEqual(decode_cursor(cursor, "secret")["offset"], 5)
@@ -157,7 +156,6 @@ class CoverageEdgesTests(unittest.TestCase):
         with patch.dict("sys.modules", {"keyring": object()}):
             self.assertIsNone(importlib.import_module("icloud_mcp.platform.secrets")._read_keychain_password("x"))
 
-        importlib.import_module("icloud_mcp.platform.logging").configure_logging(logging.DEBUG)
         importlib.import_module("icloud_mcp.platform.dav_xml").parse_xml("<root/>")
         record_metric(self.db, "x", 1.25, {"a": "b"})
         record_metric(self.db, "y", 1.0)
@@ -302,7 +300,6 @@ class CoverageEdgesTests(unittest.TestCase):
         self.assertLessEqual(imap_mail._cursor_before_date("bad:cursor"), date.today())
         self.assertIsNone(imap_mail._date_value(object()))
         self.assertEqual(imap_mail._date_value(date(2026, 1, 1)), "2026-01-01")
-        self.assertTrue(imap_mail._has_attachments(message_from_bytes(b"Content-Disposition: attachment\n\nx")))
         self.assertEqual(imap_mail._message_date(message_from_bytes(b"Subject: No Date\n\nbody"), None)[:4], "2026")
 
     def test_caldav_fake_client_flows_and_helpers(self) -> None:
@@ -484,12 +481,10 @@ class CoverageEdgesTests(unittest.TestCase):
 
     def test_calendar_write_error_status_and_main_runtime_patch(self) -> None:
         self.assertEqual(
-            _write_exception_status(RuntimeError("unauthorized for person@example.com"), self.settings)["status"],
+            write_exception_status(RuntimeError("unauthorized for person@example.com"), self.settings)["status"],
             "credential_revoked_or_expired",
         )
-        self.assertEqual(
-            _write_exception_status(RuntimeError("offline"), self.settings)["status"], "connectivity_error"
-        )
+        self.assertEqual(write_exception_status(RuntimeError("offline"), self.settings)["status"], "connectivity_error")
         fake_mcp = SimpleNamespace(run=lambda transport: None)
         with (
             patch("icloud_mcp.mcp.server.Settings.from_env", return_value=self.settings),
@@ -682,11 +677,9 @@ class CoverageEdgesTests(unittest.TestCase):
                 )["status"],
                 "conflict",
             )
-        from icloud_mcp.calendar import tools as calendar_tool_module
-
-        self.assertIn("Patched", calendar_tool_module._patched_ics(current, {"title": "Patched"}))
+        self.assertIn("Patched", patched_ics(current, {"title": "Patched"}))
         self.assertEqual(
-            calendar_tool_module._calendar_for_write(self.db, self.settings, fake_adapter, "cal_remote_no_etag")["id"],
+            calendar_for_write(self.db, self.settings, fake_adapter, "cal_remote_no_etag")["id"],
             "cal_remote_no_etag",
         )
         new_remote = caldav.SyncedCalendar(
@@ -695,13 +688,11 @@ class CoverageEdgesTests(unittest.TestCase):
         discover_adapter = SimpleNamespace(discover=lambda **kwargs: [new_remote])
         with patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")):
             self.assertEqual(
-                calendar_tool_module._calendar_for_write(self.db, self.settings, discover_adapter, "cal_discovered")[
-                    "id"
-                ],
+                calendar_for_write(self.db, self.settings, discover_adapter, "cal_discovered")["id"],
                 "cal_discovered",
             )
         with patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=None):
-            self.assertIsNone(calendar_tool_module._calendar_for_write(self.db, self.settings, fake_adapter, "missing"))
+            self.assertIsNone(calendar_for_write(self.db, self.settings, fake_adapter, "missing"))
         remote_dict_adapter = SimpleNamespace(update_event=lambda **kwargs: {"status": "conflict"})
         with (
             patch("icloud_mcp.calendar.write.load_icloud_credentials", return_value=ICloudCredentials("a", "b")),

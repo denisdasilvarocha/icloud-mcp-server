@@ -2,45 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from icloud_mcp.platform.util import compact_json, normalize_text, parse_json, sha256_text, tokenize, truncate, utc_now
-from icloud_mcp.search.rerank import reciprocal_rank_score
 from icloud_mcp.storage.cache_state import bump_index_generation
 from icloud_mcp.storage.connection import Database
-
-
-@dataclass(frozen=True)
-class SearchIndexQuery:
-    """Resolved query inputs for local search index reads."""
-
-    query: str
-    domains: list[str]
-    limit: int
-    offset: int
-    snippet_chars: int
-    start: str | None = None
-    end: str | None = None
-    person: str | None = None
-
-
-def search_index(db: Database, query: SearchIndexQuery) -> list[dict[str, Any]]:
-    """Read compact search rows from the local search index."""
-
-    return search_documents(
-        db,
-        query=query.query,
-        domains=query.domains,
-        limit=query.limit,
-        offset=query.offset,
-        snippet_chars=query.snippet_chars,
-        start=query.start,
-        end=query.end,
-        person=query.person,
-    )
 
 
 def _datetime_value(value: str | None, timezone: str) -> datetime:
@@ -267,7 +235,7 @@ def _rerank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for why in why_values:
             if why not in whys[document_id]:
                 whys[document_id].append(why)
-        scores[document_id] = scores.get(document_id, 0.0) + reciprocal_rank_score(rank)
+        scores[document_id] = scores.get(document_id, 0.0) + 1.0 / (60 + rank)
         if row.get("score") is not None:
             scores[document_id] += max(0.0, float(row["score"])) * 0.2
     max_score = max(scores.values()) or 1.0
