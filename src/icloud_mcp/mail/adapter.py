@@ -106,13 +106,11 @@ class IMAPMailAdapter:
     ) -> tuple[list[SyncedMailbox], list[SyncedMailMessage]]:
         """Fetch recent messages from iCloud IMAP without mutating server state."""
 
-        from imapclient import IMAPClient
-
         synced_mailboxes: list[SyncedMailbox] = []
         synced_messages: list[SyncedMailMessage] = []
         since = (datetime.now(tz=UTC) - timedelta(days=days)).date()
 
-        with IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True) as client:
+        with self._client() as client:
             client.login(apple_id, app_password)
             folder_names = mailboxes or self._folder_names(client.list_folders())
             for folder in folder_names:
@@ -147,14 +145,12 @@ class IMAPMailAdapter:
     ) -> IMAPSyncDelta:
         """Fetch new/changed messages and detect missing known UIDs."""
 
-        from imapclient import IMAPClient
-
         synced_mailboxes: list[SyncedMailbox] = []
         synced_messages: list[SyncedMailMessage] = []
         deleted: list[DeletedMailMessage] = []
         since = (datetime.now(tz=UTC) - timedelta(days=days)).date()
 
-        with IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True) as client:
+        with self._client() as client:
             client.login(apple_id, app_password)
             folder_names = self._folder_names(client.list_folders())
             for folder in folder_names:
@@ -205,9 +201,7 @@ class IMAPMailAdapter:
     ) -> tuple[SyncedMailbox, list[SyncedMailMessage]]:
         """Fetch one bounded batch of older messages for a mailbox."""
 
-        from imapclient import IMAPClient
-
-        with IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True) as client:
+        with self._client() as client:
             client.login(apple_id, app_password)
             select_info = client.select_folder(mailbox, readonly=True)
             mailbox_id = _mailbox_id(mailbox)
@@ -229,6 +223,11 @@ class IMAPMailAdapter:
                 ),
                 messages,
             )
+
+    def _client(self) -> Any:
+        from imapclient import IMAPClient
+
+        return IMAPClient(host=self.config.host, port=self.config.port, ssl=self.config.ssl, use_uid=True)
 
     def _folder_names(self, folders: list[tuple[Any, Any, str]]) -> list[str]:
         """Return folders worth syncing, with noisy folders delayed by ranking."""

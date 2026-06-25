@@ -12,12 +12,15 @@ import httpx
 import vobject
 from defusedxml import ElementTree
 
-from icloud_mcp.platform.dav_xml import parse_sync_collection, sync_collection_body
+from icloud_mcp.platform import dav_xml
 
 DAV_NS = "DAV:"
 CARDDAV_NS = "urn:ietf:params:xml:ns:carddav"
 CALSERVER_NS = "http://calendarserver.org/ns/"
 NS = {"d": DAV_NS, "card": CARDDAV_NS, "cs": CALSERVER_NS}
+WebDAVSyncChange = dav_xml.WebDAVSyncChange
+WebDAVSyncResult = dav_xml.WebDAVSyncResult
+sync_collection_body = dav_xml.sync_collection_body
 
 
 @dataclass(frozen=True)
@@ -59,23 +62,6 @@ class SyncedContact:
     extra_aliases: list[tuple[str, str, float]] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class WebDAVSyncChange:
-    """Changed WebDAV member returned by sync-collection."""
-
-    href: str
-    etag: str | None
-
-
-@dataclass(frozen=True)
-class WebDAVSyncResult:
-    """Parsed WebDAV sync-collection result."""
-
-    sync_token: str | None
-    changed: list[WebDAVSyncChange]
-    deleted: list[str]
-
-
 class CardDAVContactsAdapter:
     """Read-only CardDAV client for iCloud Contacts."""
 
@@ -90,8 +76,7 @@ class CardDAVContactsAdapter:
     def sync_contacts(self, *, apple_id: str, app_password: str) -> tuple[list[SyncedAddressBook], list[SyncedContact]]:
         """Discover addressbooks and fetch all vCards."""
 
-        auth = (apple_id, app_password)
-        with httpx.Client(auth=auth, timeout=self.config.timeout_seconds, follow_redirects=True) as client:
+        with self._client(apple_id, app_password) as client:
             principal_url = self._principal_url(client)
             home_url = self._addressbook_home_url(client, principal_url)
             addressbooks = self._addressbooks(client, home_url)
@@ -103,8 +88,7 @@ class CardDAVContactsAdapter:
     def discover_addressbooks(self, *, apple_id: str, app_password: str) -> list[SyncedAddressBook]:
         """Discover CardDAV addressbooks without fetching all contacts."""
 
-        auth = (apple_id, app_password)
-        with httpx.Client(auth=auth, timeout=self.config.timeout_seconds, follow_redirects=True) as client:
+        with self._client(apple_id, app_password) as client:
             principal_url = self._principal_url(client)
             home_url = self._addressbook_home_url(client, principal_url)
             return self._addressbooks(client, home_url)
@@ -255,6 +239,9 @@ class CardDAVContactsAdapter:
                 )
         return contacts
 
+    def _client(self, apple_id: str, app_password: str) -> httpx.Client:
+        return httpx.Client(auth=(apple_id, app_password), timeout=self.config.timeout_seconds, follow_redirects=True)
+
 
 def _propfind(client: httpx.Client, url: str, depth: int, body: str) -> ElementTree.Element:
     return _dav_request(client, "PROPFIND", url, depth, body)
@@ -270,21 +257,11 @@ def _sync_collection(client: httpx.Client, url: str, sync_token: str | None) -> 
 
 
 def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
-    sync_token, changed, deleted = parse_sync_collection(xml_text)
-    return WebDAVSyncResult(
-        sync_token=sync_token,
-        changed=[WebDAVSyncChange(href=href, etag=etag) for href, etag in changed],
-        deleted=deleted,
-    )
+    return dav_xml.parse_sync_collection_result(xml_text)
 
 
 def _parse_sync_collection_root(root: ElementTree.Element) -> WebDAVSyncResult:
-    sync_token, changed, deleted = parse_sync_collection(ElementTree.tostring(root, encoding="unicode"))
-    return WebDAVSyncResult(
-        sync_token=sync_token,
-        changed=[WebDAVSyncChange(href=href, etag=etag) for href, etag in changed],
-        deleted=deleted,
-    )
+    return dav_xml.parse_sync_collection_result(ElementTree.tostring(root, encoding="unicode"))
 
 
 def _dav_request(client: httpx.Client, method: str, url: str, depth: int, body: str) -> ElementTree.Element:

@@ -619,20 +619,15 @@ def _make_handler(runtime: DashboardRuntime) -> type[BaseHTTPRequestHandler]:
             return
 
         def _send_html(self, html: str) -> None:
-            body = html.encode("utf-8")
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Referrer-Policy", "no-referrer")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            self.wfile.write(body)
+            self._send_body(html.encode("utf-8"), "text/html; charset=utf-8")
 
         def _send_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
             body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            self._send_body(body, "application/json", status=status)
+
+        def _send_body(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("Referrer-Policy", "no-referrer")

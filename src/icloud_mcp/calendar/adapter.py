@@ -12,10 +12,13 @@ from defusedxml import ElementTree
 from icalendar import Calendar
 
 from icloud_mcp.calendar.cache import build_ics
-from icloud_mcp.platform.dav_xml import parse_sync_collection, sync_collection_body
+from icloud_mcp.platform import dav_xml
 
 DAV_NS = "DAV:"
 NS = {"d": DAV_NS}
+WebDAVSyncChange = dav_xml.WebDAVSyncChange
+WebDAVSyncResult = dav_xml.WebDAVSyncResult
+sync_collection_body = dav_xml.sync_collection_body
 
 
 @dataclass(frozen=True)
@@ -69,23 +72,6 @@ class CalendarWrite:
     etag: str | None
     raw_ics: str
     uid: str
-
-
-@dataclass(frozen=True)
-class WebDAVSyncChange:
-    """Changed WebDAV member returned by sync-collection."""
-
-    href: str
-    etag: str | None
-
-
-@dataclass(frozen=True)
-class WebDAVSyncResult:
-    """Parsed WebDAV sync-collection result."""
-
-    sync_token: str | None
-    changed: list[WebDAVSyncChange]
-    deleted: list[str]
 
 
 class CalDAVCalendarAdapter:
@@ -240,12 +226,7 @@ def _sync_collection(client: Any, url: str, sync_token: str | None) -> WebDAVSyn
 
 
 def _parse_sync_collection_response(xml_text: str) -> WebDAVSyncResult:
-    sync_token, changed, deleted = parse_sync_collection(xml_text)
-    return WebDAVSyncResult(
-        sync_token=sync_token,
-        changed=[WebDAVSyncChange(href=href, etag=etag) for href, etag in changed],
-        deleted=deleted,
-    )
+    return dav_xml.parse_sync_collection_result(xml_text)
 
 
 def _response_text(response: Any) -> str:

@@ -2,10 +2,29 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from defusedxml import ElementTree
 
 DAV_NS = "DAV:"
 NS = {"d": DAV_NS}
+
+
+@dataclass(frozen=True)
+class WebDAVSyncChange:
+    """Changed WebDAV member returned by sync-collection."""
+
+    href: str
+    etag: str | None
+
+
+@dataclass(frozen=True)
+class WebDAVSyncResult:
+    """Parsed WebDAV sync-collection result."""
+
+    sync_token: str | None
+    changed: list[WebDAVSyncChange]
+    deleted: list[str]
 
 
 def parse_xml(xml_text: str) -> ElementTree.Element:
@@ -47,6 +66,17 @@ def parse_sync_collection(xml_text: str) -> tuple[str | None, list[tuple[str, st
             continue
         changed.append((href, _text(response, ".//d:getetag")))
     return _text(root, "d:sync-token"), changed, deleted
+
+
+def parse_sync_collection_result(xml_text: str) -> WebDAVSyncResult:
+    """Return parsed sync-collection result objects."""
+
+    sync_token, changed, deleted = parse_sync_collection(xml_text)
+    return WebDAVSyncResult(
+        sync_token=sync_token,
+        changed=[WebDAVSyncChange(href=href, etag=etag) for href, etag in changed],
+        deleted=deleted,
+    )
 
 
 def _text(element: ElementTree.Element, path: str) -> str | None:
