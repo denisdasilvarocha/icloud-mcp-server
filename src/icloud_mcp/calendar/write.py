@@ -60,35 +60,20 @@ class CalendarWriteService:
         uid = _uid_for_event_id(event_id)
         _reserve_create_request(self.db, request_id, event_id)
         try:
+            event_fields = _event_fields(input_data)
             remote = adapter.create_event(
                 apple_id=credentials.apple_id,
                 app_password=credentials.app_password,
                 calendar_url=calendar["url"],
                 uid=uid,
-                title=input_data["title"],
-                start=input_data["start"],
-                end=input_data["end"],
-                timezone=input_data["timezone"],
-                location=input_data.get("location"),
-                description=input_data.get("description"),
-                attendees=input_data.get("attendees") or [],
-                recurrence=input_data.get("recurrence"),
-                alarms=input_data.get("alarms") or [],
+                **event_fields,
             )
         except Exception as exc:
             return write_exception_status(exc, self.settings)
         result = create_calendar_event(
             self.db,
             calendar_id=calendar["id"],
-            title=input_data["title"],
-            start=input_data["start"],
-            end=input_data["end"],
-            timezone=input_data["timezone"],
-            location=input_data.get("location"),
-            description=input_data.get("description"),
-            attendees=input_data.get("attendees") or [],
-            recurrence=input_data.get("recurrence"),
-            alarms=input_data.get("alarms") or [],
+            **event_fields,
             request_id=input_data.get("request_id"),
             href=remote.href,
             uid=remote.uid,
@@ -207,6 +192,20 @@ def _event_id_for_request(request_id: str | None) -> str:
 
 def _uid_for_event_id(event_id: str) -> str:
     return f"{event_id}@icloud-mcp.local"
+
+
+def _event_fields(input_data: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "title": input_data["title"],
+        "start": input_data["start"],
+        "end": input_data["end"],
+        "timezone": input_data["timezone"],
+        "location": input_data.get("location"),
+        "description": input_data.get("description"),
+        "attendees": input_data.get("attendees") or [],
+        "recurrence": input_data.get("recurrence"),
+        "alarms": input_data.get("alarms") or [],
+    }
 
 
 def _reserve_create_request(db: Database, request_id: str | None, event_id: str) -> None:
