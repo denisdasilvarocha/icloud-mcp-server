@@ -17,6 +17,8 @@ BASE_BACKOFF_SECONDS = 60
 def initialize_checkpoints(db: Database, names: list[str]) -> None:
     """Ensure known sync workers have dashboard-visible checkpoints."""
 
+    placeholders = ",".join("?" for _ in names)
+    db.execute(f"DELETE FROM sync_checkpoints WHERE name NOT IN ({placeholders})", tuple(names))
     for name in names:
         db.execute(
             """

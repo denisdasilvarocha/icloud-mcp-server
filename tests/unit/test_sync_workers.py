@@ -566,6 +566,19 @@ class SyncWorkerTests(unittest.TestCase):
         self.assertNotIn("embedding_worker", result)
         self.assertEqual(sync_status(self.db)["workers"]["maintenance_worker"]["status"], "ok")
 
+    def test_scheduler_drops_deprecated_embedding_worker_checkpoint(self) -> None:
+        self.db.execute(
+            """
+            INSERT INTO sync_checkpoints (name, status, detail_json)
+            VALUES ('embedding_worker', 'error', '{}')
+            """
+        )
+        scheduler = SyncScheduler(self.db, Settings(database_path=":memory:"))
+
+        scheduler.initialize_checkpoints()
+
+        self.assertNotIn("embedding_worker", sync_status(self.db)["workers"])
+
 
 if __name__ == "__main__":
     unittest.main()
