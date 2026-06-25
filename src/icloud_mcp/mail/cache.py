@@ -470,7 +470,7 @@ def _searchable_mail_body(body_text: str) -> str:
         lowered = stripped.casefold()
         if not stripped:
             continue
-        if stripped.startswith(">") or lowered.startswith("on ") and lowered.endswith("wrote:"):
+        if stripped.startswith(">") or (lowered.startswith("on ") and lowered.endswith("wrote:")):
             quote_started = True
             continue
         if lowered in {"original message", "forwarded message"} or lowered.startswith("from: "):

@@ -142,7 +142,7 @@ class IMAPMailAdapter:
                         uid_validity=uid_validity,
                         uid_next=_int_value(select_info.get(b"UIDNEXT")),
                         highest_modseq=highest_modseq,
-                        last_synced_uid=max(uids + [int(state.get("last_synced_uid") or 0)], default=None),
+                        last_synced_uid=max([*uids, int(state.get("last_synced_uid") or 0)], default=None),
                         backfill_cursor=state.get("backfill_cursor"),
                         backfill_status=state.get("backfill_status"),
                     )
