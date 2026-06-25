@@ -7,7 +7,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from icloud_mcp.mail.cache import list_mail, view_mail
+from icloud_mcp.mail.cache import list_mail, view_mail, view_mail_attachment_text
 from icloud_mcp.mcp.boundary import bounded_int, cursor_offset, cursor_state_or_error, minimum_int, not_found
 from icloud_mcp.platform.config import Settings
 from icloud_mcp.search.tools import READ_ANNOTATIONS
@@ -60,3 +60,21 @@ def register_mail_tools(mcp: object, db: Database, settings: Settings) -> None:
             body_offset=minimum_int(body_offset, 0),
         )
         return result or not_found("message_id", message_id)
+
+    @mcp.tool(name="icloud.mail.view_attachment_text", annotations=READ_ANNOTATIONS)
+    async def mail_view_attachment_text(
+        message_id: str,
+        attachment_id: str,
+        max_chars: int | None = None,
+        offset: int = 0,
+    ) -> dict:
+        """View cached extracted attachment text."""
+
+        result = view_mail_attachment_text(
+            db,
+            message_id=message_id,
+            attachment_id=attachment_id,
+            max_chars=bounded_int(max_chars or settings.mail_body_view_chars, minimum=1, maximum=20000),
+            offset=minimum_int(offset, 0),
+        )
+        return result or not_found("attachment_id", attachment_id)

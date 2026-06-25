@@ -38,7 +38,7 @@ Most tools are read-only and operate from the local cache. The only tools that w
 - **Local-first access** to iCloud Mail, Calendar, and Contacts through a SQLite cache.
 - **Unified search** across Mail, Calendar, and Contacts, plus domain-specific search tools.
 - **Advanced query support** with FTS, semantic fallback, snippets, answer hints, signed cursors, and date/person/domain filters.
-- **Mail, Calendar, and Contacts tools** for list, search, and view operations.
+- **Mail, Calendar, and Contacts tools** for list, search, view, and PDF attachment text operations.
 - **Background and manual sync** over IMAP, CalDAV, and CardDAV.
 - **Sync resilience** with checkpoints, retry/backoff state, freshness reports, and cleanup.
 - **Guarded Calendar writes** with validation, idempotent create requests, ETag conflict checks, audit events, and CalDAV persistence.
@@ -62,6 +62,9 @@ Most tools are read-only and operate from the local cache. The only tools that w
 | --- | --- |
 | `icloud.mail.list` | List mail rows from the local cache |
 | `icloud.mail.view` | View one cached mail message |
+| `icloud.mail.view_attachment_text` | Page through extracted PDF text for one cached mail attachment |
+
+Mail sync extracts searchable text from PDF attachments. Mail search results include `attachment_match` metadata when the match comes from attachment text.
 
 ### Contacts
 

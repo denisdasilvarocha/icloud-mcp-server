@@ -202,20 +202,22 @@ def search_documents(
         if score is None:
             score = _weighted_score(row, metadata, offset + index)
         snippet_text = row.get("matched_text") or row.get("canonical_text")
-        results.append(
-            {
-                "id": row["object_id"],
-                "document_id": row["id"],
-                "occurrence_id": row.get("occurrence_id"),
-                "domain": "contacts" if row["domain"] == "contact" else row["domain"],
-                "title": truncate(row.get("title"), 120),
-                "snippet": truncate(snippet_text, snippet_chars),
-                "score": round(float(score), 3),
-                "why": row.get("why", ["lexical_match"] if terms else ["recent_indexed_item"]),
-                "content_trust": "untrusted_user_data",
-                **metadata,
-            }
-        )
+        result = {
+            "id": row["object_id"],
+            "document_id": row["id"],
+            "occurrence_id": row.get("occurrence_id"),
+            "domain": "contacts" if row["domain"] == "contact" else row["domain"],
+            "title": truncate(row.get("title"), 120),
+            "snippet": truncate(snippet_text, snippet_chars),
+            "score": round(float(score), 3),
+            "why": row.get("why", ["lexical_match"] if terms else ["recent_indexed_item"]),
+            "content_trust": "untrusted_user_data",
+            **metadata,
+        }
+        attachment_match = _attachment_match(db, row["id"], terms)
+        if attachment_match:
+            result["attachment_match"] = attachment_match
+        results.append(result)
         if len(results) >= limit:
             break
     return results
@@ -246,6 +248,30 @@ def _rerank_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         reranked.append(row)
     reranked.sort(key=lambda row: row["score"], reverse=True)
     return reranked
+
+
+def _attachment_match(db: Database, document_id: str, terms: list[str]) -> dict[str, Any] | None:
+    if not terms:
+        return None
+    chunks = db.query(
+        """
+        SELECT text, metadata_json
+        FROM search_chunks
+        WHERE document_id = ? AND chunk_type = 'attachment'
+        ORDER BY chunk_index ASC
+        """,
+        (document_id,),
+    )
+    for chunk in chunks:
+        normalized = normalize_text(chunk.get("text", ""))
+        if any(term in normalized for term in terms):
+            metadata = parse_json(chunk.get("metadata_json"), {})
+            return {
+                "attachment_id": metadata.get("attachment_id"),
+                "filename": metadata.get("filename"),
+                "mime_type": metadata.get("mime_type"),
+            }
+    return None
 
 
 def person_alias_terms(db: Database, person: str | None) -> list[str]:

@@ -19,7 +19,13 @@ from icloud_mcp.contacts.cache import (
     tombstone_contact,
     upsert_contact,
 )
-from icloud_mcp.mail.cache import list_mail, upsert_mail_message, upsert_mailbox, view_mail
+from icloud_mcp.mail.cache import (
+    list_mail,
+    upsert_mail_message,
+    upsert_mailbox,
+    view_mail,
+    view_mail_attachment_text,
+)
 from icloud_mcp.mcp.server import register_resources_and_prompts
 from icloud_mcp.platform.config import Settings
 from icloud_mcp.platform.redaction import redact_text
@@ -367,6 +373,81 @@ class LocalMVPTests(unittest.TestCase):
         self.assertEqual(first["body_continuation"]["indexed_chars"], 4)
         self.assertEqual(second["body_text"], "efgh")
         self.assertEqual(second["body_continuation"]["next_offset"], 8)
+
+    def test_mail_view_body_aliases_and_empty_reason(self) -> None:
+        upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
+        upsert_mail_message(
+            self.db,
+            account_id=self.settings.default_account_id,
+            mailbox_id="mb_inbox",
+            message_id="mail_msg_alias",
+            uid=1,
+            subject="Alias body",
+            from_address={"name": "Liesa", "email": "liesa@example.com"},
+            to_addresses=[{"name": "Me", "email": "me@example.com"}],
+            date="2026-04-24T09:00:00+02:00",
+            preview="Alias body",
+            body_text="abcdefghij",
+            body_html="<p>abcdefghij</p>",
+        )
+        upsert_mail_message(
+            self.db,
+            account_id=self.settings.default_account_id,
+            mailbox_id="mb_inbox",
+            message_id="mail_msg_empty",
+            uid=2,
+            subject="Empty body",
+            from_address={"name": "Liesa", "email": "liesa@example.com"},
+            to_addresses=[{"name": "Me", "email": "me@example.com"}],
+            date="2026-04-24T09:00:00+02:00",
+            preview="",
+            body_text="",
+        )
+
+        result = view_mail(self.db, "mail_msg_alias", include=["body", "html"], max_body_chars=4)
+        empty = view_mail(self.db, "mail_msg_empty", include=["body"], max_body_chars=4)
+
+        self.assertEqual(result["body_text"], "abcd")
+        self.assertEqual(result["body_html"], "<p>abcdefghij</p>")
+        self.assertEqual(result["body_offset"], 0)
+        self.assertTrue(result["body_truncated"])
+        self.assertEqual(result["next_body_offset"], 4)
+        self.assertEqual(empty["body_unavailable_reason"], "empty")
+
+    def test_mail_attachment_text_is_searchable_and_pageable(self) -> None:
+        upsert_mailbox(self.db, account_id=self.settings.default_account_id, mailbox_id="mb_inbox", name="INBOX")
+        upsert_mail_message(
+            self.db,
+            account_id=self.settings.default_account_id,
+            mailbox_id="mb_inbox",
+            message_id="mail_msg_pdf",
+            uid=1,
+            subject="Receipt",
+            from_address={"name": "Shop", "email": "shop@example.com"},
+            to_addresses=[{"name": "Me", "email": "me@example.com"}],
+            date="2026-04-24T09:00:00+02:00",
+            preview="Receipt",
+            body_text="Body",
+            attachments=[
+                {
+                    "attachment_id": "att_receipt",
+                    "filename": "receipt.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 100,
+                    "text": "needle-only attachment receipt total",
+                }
+            ],
+            has_attachments=True,
+        )
+
+        results = search_documents(self.db, query="needle-only", domains=["mail"], limit=5, offset=0, snippet_chars=300)
+        text = view_mail_attachment_text(self.db, "mail_msg_pdf", "att_receipt", max_chars=10, offset=12)
+
+        self.assertEqual(results[0]["id"], "mail_msg_pdf")
+        self.assertEqual(results[0]["attachment_match"]["attachment_id"], "att_receipt")
+        self.assertEqual(results[0]["attachment_match"]["filename"], "receipt.pdf")
+        self.assertEqual(text["text"], "attachment")
+        self.assertEqual(text["next_offset"], 22)
 
     def test_search_filters_by_person_and_time(self) -> None:
         create_calendar_event(

@@ -106,6 +106,7 @@ def view_mail(
         "subject": row["subject"],
         "date": row["date"],
     }
+    include_set = _mail_view_includes(include)
     if "headers" in include:
         result["headers"] = {
             "from": parse_json(row["from_json"], {}),
@@ -117,14 +118,16 @@ def view_mail(
             "references": parse_json(row.get("references_json"), []),
             "flags": parse_json(row["flags_json"], []),
         }
-    if "body_text" in include:
+    if "body_text" in include_set:
         body = row["body_text"] or ""
         safe_offset = max(0, min(body_offset, len(body)))
         body_end = safe_offset + max_body_chars
         result["body_text"] = body[safe_offset:body_end]
         result["body_truncated"] = body_end < len(body)
-        result["body_unavailable_reason"] = row.get("body_unavailable_reason")
+        result["body_offset"] = safe_offset
+        result["body_unavailable_reason"] = row.get("body_unavailable_reason") or ("empty" if not body else None)
         next_offset = body_end if body_end < len(body) else None
+        result["next_body_offset"] = next_offset
         result["body_continuation"] = {
             "available": next_offset is not None,
             "offset": safe_offset,
@@ -133,10 +136,49 @@ def view_mail(
             "total_chars": len(body),
             "indexed_chars": row.get("body_indexed_chars") or 0,
         }
-    if "attachments" in include:
+    if "body_html" in include_set:
+        result["body_html"] = row.get("body_html") or ""
+    if "attachments" in include_set:
         result["attachments"] = parse_json(row.get("attachments_json"), [])
     result["content_trust"] = "untrusted_user_data"
     return result
+
+
+def view_mail_attachment_text(
+    db: Database,
+    message_id: str,
+    attachment_id: str,
+    max_chars: int,
+    offset: int = 0,
+) -> dict[str, Any] | None:
+    """Return one cached attachment text slice."""
+
+    row = db.query_one(
+        """
+        SELECT *
+        FROM mail_attachment_texts
+        WHERE message_id = ? AND attachment_id = ?
+        """,
+        (message_id, attachment_id),
+    )
+    if not row:
+        return None
+    text = row["text"] or ""
+    safe_offset = max(0, min(offset, len(text)))
+    text_end = safe_offset + max_chars
+    next_offset = text_end if text_end < len(text) else None
+    return {
+        "message_id": message_id,
+        "attachment_id": attachment_id,
+        "filename": row.get("filename"),
+        "mime_type": row.get("mime_type"),
+        "text": text[safe_offset:text_end],
+        "offset": safe_offset,
+        "text_truncated": next_offset is not None,
+        "next_offset": next_offset,
+        "text_unavailable_reason": row.get("text_unavailable_reason") if not text else None,
+        "content_trust": "untrusted_user_data",
+    }
 
 
 def mailboxes_for_backfill(db: Database, limit: int) -> list[dict[str, Any]]:
@@ -224,6 +266,7 @@ def upsert_mail_message(
     date: str,
     preview: str,
     body_text: str,
+    body_html: str = "",
     cc_addresses: list[dict[str, str]] | None = None,
     bcc_addresses: list[dict[str, str]] | None = None,
     header_message_id: str | None = None,
@@ -240,15 +283,19 @@ def upsert_mail_message(
     """Upsert a synced mail message and index body text."""
 
     now = utc_now()
+    attachment_rows = [_attachment_row(message_id, attachment) for attachment in attachments or []]
+    attachment_metadata = [_attachment_metadata(row) for row in attachment_rows]
+    has_attachment_value = has_attachments or bool(attachment_rows)
     indexed_body = _searchable_mail_body(body_text)[:max_index_chars]
+    body_reason = body_unavailable_reason or ("empty" if not body_text else None)
     thread_id = _mail_thread_id(header_message_id or message_id, in_reply_to, references or [])
     db.execute(
         """
         INSERT INTO mail_messages
           (id, account_id, mailbox_id, uid, message_id, thread_id, subject, from_json, to_json, cc_json, bcc_json,
-           in_reply_to, references_json, date, flags_json, size_bytes, preview, body_text, body_hash,
+           in_reply_to, references_json, date, flags_json, size_bytes, preview, body_text, body_html, body_hash,
            body_unavailable_reason, body_indexed_chars, has_attachments, attachments_json, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(mailbox_id, uid) DO UPDATE SET
           id = excluded.id,
           message_id = excluded.message_id,
@@ -265,6 +312,7 @@ def upsert_mail_message(
           size_bytes = excluded.size_bytes,
           preview = excluded.preview,
           body_text = excluded.body_text,
+          body_html = excluded.body_html,
           body_hash = excluded.body_hash,
           body_unavailable_reason = excluded.body_unavailable_reason,
           body_indexed_chars = excluded.body_indexed_chars,
@@ -292,14 +340,35 @@ def upsert_mail_message(
             size_bytes,
             preview,
             body_text,
+            body_html,
             sha256_text(body_text),
-            body_unavailable_reason,
+            body_reason,
             len(indexed_body),
-            1 if has_attachments else 0,
-            compact_json(attachments or []),
+            1 if has_attachment_value else 0,
+            compact_json(attachment_metadata),
             now,
         ),
     )
+    db.execute("DELETE FROM mail_attachment_texts WHERE message_id = ?", (message_id,))
+    for attachment in attachment_rows:
+        if attachment["text"] or attachment.get("text_unavailable_reason"):
+            db.execute(
+                """
+                INSERT INTO mail_attachment_texts
+                  (message_id, attachment_id, filename, mime_type, text, text_hash, text_unavailable_reason, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    attachment["attachment_id"],
+                    attachment.get("filename"),
+                    attachment.get("mime_type"),
+                    attachment["text"],
+                    sha256_text(attachment["text"]),
+                    attachment.get("text_unavailable_reason"),
+                    now,
+                ),
+            )
     sender = " ".join([from_address.get("name", ""), from_address.get("email", "")]).strip()
     recipients = " ".join(
         " ".join([address.get("name", ""), address.get("email", "")]).strip()
@@ -312,9 +381,9 @@ def upsert_mail_message(
         "to": to_addresses,
         "mailbox": mailbox.get("name"),
         "source_quality": mailbox.get("folder_quality") or "normal",
-        "has_attachments": has_attachments,
-        "attachments": attachments or [],
-        "body_unavailable_reason": body_unavailable_reason,
+        "has_attachments": has_attachment_value,
+        "attachments": attachment_metadata,
+        "body_unavailable_reason": body_reason,
     }
     upsert_search_document(
         db,
@@ -327,7 +396,14 @@ def upsert_mail_message(
         sender=sender,
         participants=recipients,
         chunks=_mail_chunks(
-            subject, from_address, to_addresses, cc_addresses or [], bcc_addresses or [], preview, indexed_body
+            subject,
+            from_address,
+            to_addresses,
+            cc_addresses or [],
+            bcc_addresses or [],
+            preview,
+            indexed_body,
+            attachment_rows,
         ),
     )
     db.execute(
@@ -349,6 +425,36 @@ def _mailbox_quality(name: str) -> str:
     if any(part in normalized for part in ["newsletter", "promotions", "bulk"]):
         return "newsletter"
     return "normal"
+
+
+def _mail_view_includes(include: list[str]) -> set[str]:
+    include_set = set(include)
+    if include_set & {"body", "text"}:
+        include_set.add("body_text")
+    if include_set & {"html"}:
+        include_set.add("body_html")
+    return include_set
+
+
+def _attachment_row(message_id: str, attachment: dict[str, Any]) -> dict[str, Any]:
+    attachment_id = str(attachment.get("attachment_id") or f"att_{sha256_text(compact_json(attachment))[:16]}")
+    text = str(attachment.get("text") or "")
+    return {
+        "message_id": message_id,
+        "attachment_id": attachment_id,
+        "filename": attachment.get("filename"),
+        "mime_type": attachment.get("mime_type"),
+        "size_bytes": attachment.get("size_bytes"),
+        "content_id": attachment.get("content_id"),
+        "disposition": attachment.get("disposition"),
+        "text": text,
+        "text_indexed": bool(text),
+        "text_unavailable_reason": None if text else attachment.get("text_unavailable_reason"),
+    }
+
+
+def _attachment_metadata(attachment: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in attachment.items() if key not in {"message_id", "text"}}
 
 
 def _mail_thread_id(header_message_id: str, in_reply_to: str | None, references: list[str]) -> str:
@@ -383,6 +489,7 @@ def _mail_chunks(
     bcc_addresses: list[dict[str, str]],
     preview: str,
     body_text: str,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     header_text = "\n".join(
         [
@@ -399,6 +506,16 @@ def _mail_chunks(
     chunks.extend(
         {"type": "body", "text": stripped_body[index : index + 4000]} for index in range(0, len(stripped_body), 4000)
     )
+    for attachment in attachments or []:
+        text = attachment.get("text", "").strip()
+        chunks.extend(
+            {
+                "type": "attachment",
+                "text": text[index : index + 4000],
+                "metadata": _attachment_metadata(attachment),
+            }
+            for index in range(0, len(text), 4000)
+        )
     return chunks
 
 

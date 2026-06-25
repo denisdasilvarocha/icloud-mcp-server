@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from icloud_mcp.mail.cache import upsert_mail_message, upsert_mailbox
 from icloud_mcp.mcp.server import create_server
 from icloud_mcp.platform.config import Settings
 from icloud_mcp.search.repository import upsert_search_document
@@ -106,6 +107,49 @@ class MCPContractTests(unittest.TestCase):
         for result in results.values():
             self.assertEqual(result["status"], "invalid_cursor")
             self.assertEqual(result["reason"], "tampered_or_malformed")
+
+    def test_mail_attachment_text_tool_pages_cached_text(self) -> None:
+        upsert_mailbox(self.db, account_id="local", mailbox_id="mb_inbox", name="INBOX")
+        upsert_mail_message(
+            self.db,
+            account_id="local",
+            mailbox_id="mb_inbox",
+            message_id="mail_msg_pdf",
+            uid=1,
+            subject="Receipt",
+            from_address={"name": "Shop", "email": "shop@example.com"},
+            to_addresses=[{"name": "Me", "email": "me@example.com"}],
+            date="2026-04-24T09:00:00+02:00",
+            preview="Receipt",
+            body_text="Body",
+            attachments=[
+                {
+                    "attachment_id": "att_receipt",
+                    "filename": "receipt.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 100,
+                    "text": "receipt text body",
+                }
+            ],
+            has_attachments=True,
+        )
+
+        async def run() -> tuple[dict[str, object], dict[str, object]]:
+            page = await self.server.call_tool(
+                "icloud.mail.view_attachment_text",
+                {"message_id": "mail_msg_pdf", "attachment_id": "att_receipt", "max_chars": 7, "offset": 8},
+            )
+            missing = await self.server.call_tool(
+                "icloud.mail.view_attachment_text",
+                {"message_id": "mail_msg_pdf", "attachment_id": "missing"},
+            )
+            return page.structured_content, missing.structured_content
+
+        page, missing = asyncio.run(run())
+
+        self.assertEqual(page["text"], "text bo")
+        self.assertEqual(page["next_offset"], 15)
+        self.assertEqual(missing["status"], "not_found")
 
     def test_search_default_domains_remain_all_public_domains(self) -> None:
         upsert_search_document(

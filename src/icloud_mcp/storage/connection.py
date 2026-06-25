@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS mail_messages (
   size_bytes INTEGER,
   preview TEXT,
   body_text TEXT,
+  body_html TEXT,
   body_hash TEXT,
   body_unavailable_reason TEXT,
   body_indexed_chars INTEGER DEFAULT 0,
@@ -62,6 +63,18 @@ CREATE TABLE IF NOT EXISTS mail_messages (
   deleted_at TEXT,
   updated_at TEXT NOT NULL,
   UNIQUE(mailbox_id, uid)
+);
+
+CREATE TABLE IF NOT EXISTS mail_attachment_texts (
+  message_id TEXT NOT NULL,
+  attachment_id TEXT NOT NULL,
+  filename TEXT,
+  mime_type TEXT,
+  text TEXT NOT NULL,
+  text_hash TEXT NOT NULL,
+  text_unavailable_reason TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY(message_id, attachment_id)
 );
 
 CREATE TABLE IF NOT EXISTS calendar_collections (
@@ -320,6 +333,7 @@ def run_migrations(db: Database) -> None:
     _ensure_column(db, "mail_messages", "bcc_json", "TEXT")
     _ensure_column(db, "mail_messages", "in_reply_to", "TEXT")
     _ensure_column(db, "mail_messages", "references_json", "TEXT")
+    _ensure_column(db, "mail_messages", "body_html", "TEXT")
     _ensure_column(db, "mail_messages", "body_unavailable_reason", "TEXT")
     _ensure_column(db, "mail_messages", "body_indexed_chars", "INTEGER DEFAULT 0")
     _ensure_column(db, "mail_messages", "attachments_json", "TEXT")

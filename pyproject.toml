@@ -19,6 +19,7 @@ dependencies = [
   "python-dateutil",
   "defusedxml",
   "keyring",
+  "pypdf",
 ]
 
 [project.optional-dependencies]
