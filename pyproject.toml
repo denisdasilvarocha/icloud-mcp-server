@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "icloud-mcp-server"
-version = "0.1.0"
+version = "0.8.0"
 description = "Local-first FastMCP server for cached iCloud Mail, Calendar, and Contacts search."
 readme = "README.md"
 requires-python = ">=3.11"
