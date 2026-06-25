@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import email
 import hashlib
+import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
+from io import BytesIO
 from typing import Any
 
 from icalendar import Calendar
@@ -59,6 +61,7 @@ class SyncedMailMessage:
     preview: str
     body_text: str
     has_attachments: bool
+    body_html: str = ""
     bcc_addresses: list[dict[str, str]] = field(default_factory=list)
     in_reply_to: str | None = None
     references: list[str] = field(default_factory=list)
@@ -268,10 +271,10 @@ def _message_from_email(
 ) -> SyncedMailMessage:
     subject = _decode_header(message.get("Subject", ""))
     unavailable_reason = _body_unavailable_reason(message)
-    body_text = "" if unavailable_reason else _body_text(message)
+    body_text, body_html = ("", "") if unavailable_reason else _body_parts(message)
     message_id = message.get("Message-ID")
     stable_id = _message_id(mailbox_id, uid, message_id)
-    attachments = _attachments(message)
+    attachments = _attachments(message, stable_id)
     invites = _calendar_invites(message)
     return SyncedMailMessage(
         id=stable_id,
@@ -287,6 +290,7 @@ def _message_from_email(
         size_bytes=size_bytes,
         preview=truncate(body_text, 240),
         body_text=body_text,
+        body_html=body_html,
         has_attachments=bool(attachments),
         bcc_addresses=_addresses(message.get("Bcc", "")),
         in_reply_to=message.get("In-Reply-To"),
@@ -298,6 +302,10 @@ def _message_from_email(
 
 
 def _body_text(message: Message) -> str:
+    return _body_parts(message)[0]
+
+
+def _body_parts(message: Message) -> tuple[str, str]:
     plain_parts: list[str] = []
     html_parts: list[str] = []
 
@@ -312,8 +320,9 @@ def _body_text(message: Message) -> str:
     else:
         _append_part_text(message, plain_parts, html_parts)
 
+    html = "\n".join(html_parts).strip()
     text = "\n".join(plain_parts).strip() or "\n".join(html_to_text(part) for part in html_parts).strip()
-    return "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
+    return "\n".join(line.rstrip() for line in text.splitlines() if line.strip()), html
 
 
 def _append_part_text(part: Message, plain_parts: list[str], html_parts: list[str]) -> None:
@@ -333,24 +342,54 @@ def _append_part_text(part: Message, plain_parts: list[str], html_parts: list[st
         plain_parts.append(text)
 
 
-def _attachments(message: Message) -> list[dict[str, Any]]:
+def _attachments(message: Message, stable_message_id: str = "") -> list[dict[str, Any]]:
     attachments = []
-    for part in message.walk():
+    for index, part in enumerate(message.walk()):
         disposition = _header_text(part.get("Content-Disposition")).lower()
         filename = part.get_filename()
         if "attachment" not in disposition and not filename:
             continue
         payload = part.get_payload(decode=True) or b""
+        content_id = _header_text(part.get("Content-ID")).strip("<>") or None
+        filename_text = _decode_header(filename or "")
+        text, unavailable_reason = _attachment_text(part.get_content_type(), payload)
         attachments.append(
             {
-                "filename": _decode_header(filename or ""),
+                "attachment_id": _attachment_id(stable_message_id, index, filename_text, content_id),
+                "filename": filename_text,
                 "mime_type": part.get_content_type(),
                 "size_bytes": len(payload),
-                "content_id": _header_text(part.get("Content-ID")).strip("<>") or None,
+                "content_id": content_id,
                 "disposition": disposition.split(";", 1)[0] or "attachment",
+                "text": text,
+                "text_indexed": bool(text),
+                "text_unavailable_reason": unavailable_reason,
             }
         )
     return attachments
+
+
+def _attachment_id(stable_message_id: str, index: int, filename: str, content_id: str | None) -> str:
+    source = f"{stable_message_id}:{index}:{filename}:{content_id or ''}"
+    return f"att_{hashlib.sha256(source.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _attachment_text(mime_type: str, payload: bytes) -> tuple[str, str | None]:
+    if mime_type != "application/pdf":
+        return "", None
+    logger = logging.getLogger("pypdf")
+    previous_level = logger.level
+    logger.setLevel(logging.CRITICAL + 1)
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(payload))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        return text, None if text else "pdf_text_empty"
+    except Exception:
+        return "", "pdf_extract_failed"
+    finally:
+        logger.setLevel(previous_level)
 
 
 def _calendar_invites(message: Message) -> list[dict[str, Any]]:

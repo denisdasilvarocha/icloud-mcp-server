@@ -192,6 +192,7 @@ def _upsert_messages(db: Database, settings: Settings, messages: list) -> None:
             date=message.date,
             preview=message.preview,
             body_text=message.body_text,
+            body_html=message.body_html,
             flags=message.flags,
             size_bytes=message.size_bytes,
             has_attachments=message.has_attachments,

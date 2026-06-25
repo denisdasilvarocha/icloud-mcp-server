@@ -41,6 +41,7 @@ Content-Type: text/html; charset=utf-8
         self.assertEqual(parsed.from_address["email"], "liesa@example.com")
         self.assertIn("Monday at 14:00", parsed.body_text)
         self.assertNotIn("bad()", parsed.body_text)
+        self.assertIn("<p>Let's meet Monday at 14:00.</p>", parsed.body_html)
 
     def test_imap_message_parser_extracts_headers_attachments_and_invites(self) -> None:
         raw = b"""From: Liesa <liesa@example.com>
@@ -93,6 +94,43 @@ agenda
         self.assertEqual(parsed.references, ["<root@example.com>", "<prev@example.com>"])
         self.assertEqual(parsed.attachments[0]["filename"], "agenda.txt")
         self.assertEqual(parsed.calendar_invites[0]["uid"], "invite-1")
+
+    def test_imap_message_parser_adds_stable_pdf_attachment_metadata(self) -> None:
+        raw = b"""From: Liesa <liesa@example.com>
+To: Me <me@example.com>
+Subject: PDF
+Date: Fri, 24 Apr 2026 09:00:00 +0200
+Message-ID: <msg-pdf@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b"
+
+--b
+Content-Type: text/html; charset=utf-8
+
+<p>HTML fallback</p>
+--b
+Content-Disposition: attachment; filename="receipt.pdf"
+Content-Type: application/pdf
+
+not a real pdf
+--b--
+"""
+        parsed = _message_from_email(
+            mailbox_id="mb_inbox",
+            uid=4,
+            message=message_from_bytes(raw),
+            flags=(),
+            size_bytes=len(raw),
+            internal_date=None,
+        )
+
+        attachment = parsed.attachments[0]
+        self.assertEqual(parsed.body_text, "HTML fallback")
+        self.assertIn("<p>HTML fallback</p>", parsed.body_html)
+        self.assertEqual(attachment["attachment_id"], "att_03a0c17561633458")
+        self.assertEqual(attachment["mime_type"], "application/pdf")
+        self.assertFalse(attachment["text_indexed"])
+        self.assertEqual(attachment["text_unavailable_reason"], "pdf_extract_failed")
 
     def test_imap_message_parser_handles_non_string_attachment_disposition(self) -> None:
         message = Message()
